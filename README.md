@@ -1,15 +1,20 @@
 # Memex
 
-A temporal knowledge graph memory layer for AI agents. Single Go binary, zero dependencies beyond SQLite.
+A **local-first** temporal knowledge graph memory layer for AI agents. Single Go binary, zero dependencies beyond SQLite. Runs entirely on your machine with Ollama — no API keys required.
 
 Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex gives AI agents persistent, searchable, graph-structured memory with temporal awareness.
 
+![Knowledge Browser](assets/001.png)
+![Hybrid Search Results](assets/002.png)
+![Interactive Graph Explorer](assets/003.png)
+
 ## Features
 
+- **Local First** - Works out of the box with Ollama for both embeddings and LLM — your data never leaves your machine
 - **Knowledge Graph** - Entities, relations, and episodes extracted from natural language via LLM
 - **Hybrid Search** - BM25 full-text + vector similarity + graph traversal, fused with Reciprocal Rank Fusion
 - **Temporal Awareness** - Bitemporal relations (valid time + transaction time), memory decay, automatic pruning
-- **Multi-Provider** - Ollama, OpenAI, Google Gemini, Vertex AI, Azure, Groq for both embeddings and LLM
+- **Multi-Provider** - Ollama (local), OpenAI, Google Gemini, Vertex AI, Azure, Groq for both embeddings and LLM
 - **Per-KB Isolation** - Each knowledge base has its own embedding model, LLM, and API keys
 - **MCP Server** - Model Context Protocol support for Claude, Cursor, and other MCP-compatible clients
 - **REST API** - Full HTTP API with Chi router (20+ endpoints)
@@ -25,8 +30,11 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 # Build
 go build -o memex ./cmd/memex/
 
-# Create a knowledge base with Gemini
-export GEMINI_API_KEY="your-key"
+# Create a knowledge base with local Ollama (no API keys needed)
+# Requires: ollama pull nomic-embed-text && ollama pull llama3.2
+./memex kb create my-project --name "My Project"
+
+# Or use a cloud provider
 ./memex kb create my-project \
   --embed gemini/gemini-embedding-001 \
   --llm gemini/gemini-2.5-flash \
