@@ -16,6 +16,9 @@ const (
 	pprAlpha   = 0.15 // teleport probability (jump back to seed)
 	pprMaxIter = 20   // max power iterations
 	pprEpsilon = 1e-6 // convergence threshold
+
+	// Minimum hydration batch size avoids many tiny IN queries when limit is small.
+	minHydrationBatchSize = 64
 )
 
 // searchGraph expands seed entity IDs via BFS on the knowledge graph,
@@ -187,7 +190,7 @@ func hydrateEntityResults(
 	}
 
 	results := make([]*domain.SearchResult, 0, min(len(ids), limit))
-	batchSize := min(len(ids), max(limit*2, 64))
+	batchSize := min(len(ids), max(limit*2, minHydrationBatchSize))
 	for start := 0; start < len(ids) && len(results) < limit; start += batchSize {
 		end := min(start+batchSize, len(ids))
 		batchIDs := ids[start:end]
