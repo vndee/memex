@@ -102,6 +102,11 @@ func (s *HTTPServer) buildRouter() chi.Router {
 		// Global stats
 		r.Get("/stats", s.handleGlobalStats)
 
+		// Jobs (global, filterable by kb)
+		r.Get("/jobs", s.handleJobList)
+		r.Get("/jobs/{id}", s.handleJobGet)
+		r.Post("/jobs/{id}/retry", s.handleJobRetry)
+
 		// Knowledge bases
 		r.Route("/kb", func(r chi.Router) {
 			r.Post("/", s.handleKBCreate)
@@ -551,4 +556,43 @@ func (s *HTTPServer) handleLifecycleConsolidate(w http.ResponseWriter, r *http.R
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// Job handlers
+
+func (s *HTTPServer) handleJobList(w http.ResponseWriter, r *http.Request) {
+	kb := r.URL.Query().Get("kb")
+	status := r.URL.Query().Get("status")
+	limit := parseIntParam(r, "limit", defaultListLimit, maxListLimit)
+
+	jobs, err := s.store.ListJobs(r.Context(), kb, status, limit)
+	if err != nil {
+		slog.Error("list jobs failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list jobs")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+}
+
+func (s *HTTPServer) handleJobGet(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	job, err := s.store.GetJob(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", id))
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *HTTPServer) handleJobRetry(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	job, err := s.sched.RetryJob(r.Context(), id)
+	if err != nil {
+		slog.Error("retry job failed", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retry job")
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }

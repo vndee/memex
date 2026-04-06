@@ -122,6 +122,21 @@ func (s *MCPServer) registerTools() {
 		Name:        "memex_lifecycle_consolidate",
 		Description: "Find and merge duplicate entities based on embedding similarity",
 	}, s.handleLifecycleConsolidate)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_job_list",
+		Description: "List ingestion jobs with optional filters by knowledge base and status",
+	}, s.handleJobList)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_job_get",
+		Description: "Get details of a specific ingestion job by ID",
+	}, s.handleJobGet)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_job_retry",
+		Description: "Retry a failed ingestion job",
+	}, s.handleJobRetry)
 }
 
 // --- Input/Output types ---
@@ -235,6 +250,32 @@ type lifecycleConsolidateInput struct {
 
 type lifecycleConsolidateOutput struct {
 	Result *lifecycle.ConsolidationResult `json:"result"`
+}
+
+type jobListInput struct {
+	KB     string `json:"kb,omitempty" jsonschema:"filter by knowledge base ID"`
+	Status string `json:"status,omitempty" jsonschema:"filter by status: queued, running, completed, failed"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"max results (default 50)"`
+}
+
+type jobListOutput struct {
+	Jobs []*domain.IngestionJob `json:"jobs"`
+}
+
+type jobGetInput struct {
+	ID string `json:"id" jsonschema:"job ID"`
+}
+
+type jobGetOutput struct {
+	Job *domain.IngestionJob `json:"job"`
+}
+
+type jobRetryInput struct {
+	ID string `json:"id" jsonschema:"job ID to retry"`
+}
+
+type jobRetryOutput struct {
+	Job *domain.IngestionJob `json:"job"`
 }
 
 // --- Tool handlers ---
@@ -482,6 +523,61 @@ func (s *MCPServer) handleLifecycleConsolidate(ctx context.Context, req *mcp.Cal
 	msg := fmt.Sprintf("Consolidation complete for KB %s: %d/%d candidates merged, %d relations fixed",
 		input.KB, result.Merged, result.Candidates, result.RelationsFixed)
 	return textResult(msg), lifecycleConsolidateOutput{Result: result}, nil
+}
+
+func (s *MCPServer) handleJobList(ctx context.Context, req *mcp.CallToolRequest, input jobListInput) (*mcp.CallToolResult, jobListOutput, error) {
+	limit := clampLimit(input.Limit)
+
+	jobs, err := s.store.ListJobs(ctx, input.KB, input.Status, limit)
+	if err != nil {
+		return nil, jobListOutput{}, fmt.Errorf("list jobs: %w", err)
+	}
+
+	if len(jobs) == 0 {
+		return textResult("No jobs found."), jobListOutput{Jobs: jobs}, nil
+	}
+
+	counts := make(map[string]int)
+	for _, j := range jobs {
+		counts[j.Status]++
+	}
+	summary := fmt.Sprintf("Found %d jobs", len(jobs))
+	for status, n := range counts {
+		summary += fmt.Sprintf(", %d %s", n, status)
+	}
+	return textResult(summary), jobListOutput{Jobs: jobs}, nil
+}
+
+func (s *MCPServer) handleJobGet(ctx context.Context, req *mcp.CallToolRequest, input jobGetInput) (*mcp.CallToolResult, jobGetOutput, error) {
+	if input.ID == "" {
+		return nil, jobGetOutput{}, fmt.Errorf("id is required")
+	}
+
+	job, err := s.store.GetJob(ctx, input.ID)
+	if err != nil {
+		return nil, jobGetOutput{}, fmt.Errorf("get job %q: %w", input.ID, err)
+	}
+
+	summary := fmt.Sprintf("Job %s: status=%s source=%s attempts=%d/%d",
+		job.ID, job.Status, job.Source, job.Attempts, job.MaxAttempts)
+	if job.Error != "" {
+		summary += fmt.Sprintf(" error=%s", job.Error)
+	}
+	return textResult(summary), jobGetOutput{Job: job}, nil
+}
+
+func (s *MCPServer) handleJobRetry(ctx context.Context, req *mcp.CallToolRequest, input jobRetryInput) (*mcp.CallToolResult, jobRetryOutput, error) {
+	if input.ID == "" {
+		return nil, jobRetryOutput{}, fmt.Errorf("id is required")
+	}
+
+	job, err := s.sched.RetryJob(ctx, input.ID)
+	if err != nil {
+		return nil, jobRetryOutput{}, fmt.Errorf("retry job %q: %w", input.ID, err)
+	}
+
+	msg := fmt.Sprintf("Retried job %s, new status: %s", job.ID, job.Status)
+	return textResult(msg), jobRetryOutput{Job: job}, nil
 }
 
 // --- Helpers ---

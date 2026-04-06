@@ -34,6 +34,7 @@ const (
 	collEntities collection = iota
 	collRelations
 	collEpisodes
+	collJobs
 	collSearchResults
 )
 
@@ -45,6 +46,8 @@ func (c collection) String() string {
 		return "Relations"
 	case collEpisodes:
 		return "Episodes"
+	case collJobs:
+		return "Jobs"
 	case collSearchResults:
 		return "Search Results"
 	default:
@@ -60,6 +63,8 @@ func (c collection) shortKey() string {
 		return "r"
 	case collEpisodes:
 		return "p"
+	case collJobs:
+		return "J"
 	default:
 		return ""
 	}
@@ -86,6 +91,7 @@ type model struct {
 	entities   []*domain.Entity
 	relations  []*domain.Relation
 	episodes   []*domain.Episode
+	jobs       []*domain.IngestionJob
 	results    []*domain.SearchResult
 
 	// Entity name cache for relation display
@@ -177,6 +183,7 @@ type contentLoadedMsg struct {
 	entities  []*domain.Entity
 	relations []*domain.Relation
 	episodes  []*domain.Episode
+	jobs      []*domain.IngestionJob
 }
 type searchDoneMsg []*domain.SearchResult
 type statsLoadedMsg *domain.MemoryStats
@@ -234,6 +241,12 @@ func (m model) loadContent() tea.Cmd {
 				return statusMsg(fmt.Sprintf("error: %v", err))
 			}
 			msg.episodes = eps
+		case collJobs:
+			jobs, err := store.ListJobs(ctx, kbID, "", 500)
+			if err != nil {
+				return statusMsg(fmt.Sprintf("error: %v", err))
+			}
+			msg.jobs = jobs
 		}
 		return msg
 	}
@@ -352,6 +365,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entities = msg.entities
 		m.relations = msg.relations
 		m.episodes = msg.episodes
+		m.jobs = msg.jobs
 		m.rebuildTable()
 		m.updateInspector()
 		return m, nil
@@ -584,6 +598,9 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.loadContent(), m.loadEntityNames())
 	case "p":
 		m.coll = collEpisodes
+		return m, m.loadContent()
+	case "J":
+		m.coll = collJobs
 		return m, m.loadContent()
 	case "s":
 		if m.activeKB != "" {
@@ -909,6 +926,20 @@ func (m *model) rebuildTable() {
 		}
 		m.contentTbl.SetRows(rows)
 
+	case collJobs:
+		m.contentTbl.SetColumns(jobColumns(contentW))
+		rows := make([]table.Row, len(m.jobs))
+		for i, j := range m.jobs {
+			rows[i] = table.Row{
+				j.ID[:safeLen(j.ID, 8)],
+				j.Status,
+				j.Source,
+				fmt.Sprintf("%d/%d", j.Attempts, j.MaxAttempts),
+				j.CreatedAt.Format("Jan 02 15:04"),
+			}
+		}
+		m.contentTbl.SetRows(rows)
+
 	case collSearchResults:
 		m.contentTbl.SetColumns(searchColumns(contentW))
 		rows := make([]table.Row, len(m.results))
@@ -939,6 +970,10 @@ func (m *model) updateInspector() {
 	case collEpisodes:
 		if idx >= 0 && idx < len(m.episodes) {
 			content = renderEpisodeDetail(m.episodes[idx])
+		}
+	case collJobs:
+		if idx >= 0 && idx < len(m.jobs) {
+			content = renderJobDetail(m.jobs[idx])
 		}
 	case collSearchResults:
 		if idx >= 0 && idx < len(m.results) {
@@ -1067,6 +1102,7 @@ func (m model) renderTabs() string {
 		{collEntities, "Entities"},
 		{collRelations, "Relations"},
 		{collEpisodes, "Episodes"},
+		{collJobs, "Jobs"},
 	}
 
 	var parts []string
@@ -1094,6 +1130,8 @@ func (m model) collectionCount() int {
 		return len(m.relations)
 	case collEpisodes:
 		return len(m.episodes)
+	case collJobs:
+		return len(m.jobs)
 	case collSearchResults:
 		return len(m.results)
 	}
@@ -1128,7 +1166,7 @@ func (m model) renderStatusBar() string {
 		{"/", "search"},
 		{"i", "insert"},
 		{"n", "new"},
-		{"e/r/p", "collections"},
+		{"e/r/p/J", "collections"},
 		{"V", "graph"},
 		{"x", "del"},
 		{"?", "help"},
@@ -1175,6 +1213,7 @@ func (m model) renderHelp() string {
     e                  Show entities
     r                  Show relations
     p                  Show episodes
+    J (shift+j)        Show ingestion jobs
 
   ` + labelStyle.Render("Actions") + `
     /                  Search (hybrid semantic + keyword)
@@ -1287,6 +1326,16 @@ func searchColumns(totalW int) []table.Column {
 	}
 }
 
+func jobColumns(totalW int) []table.Column {
+	return []table.Column{
+		{Title: "ID", Width: 10},
+		{Title: "Status", Width: 10},
+		{Title: "Source", Width: 8},
+		{Title: "Att", Width: 5},
+		{Title: "Date", Width: 14},
+	}
+}
+
 // --- Detail renderers ---
 
 func renderEntityDetail(e *domain.Entity) string {
@@ -1354,6 +1403,67 @@ func renderSearchResultDetail(r *domain.SearchResult) string {
 		}
 	}
 	b.WriteString("\n\n" + mutedStyle.Render("ID: "+r.ID))
+	return b.String()
+}
+
+func renderJobDetail(j *domain.IngestionJob) string {
+	var b strings.Builder
+	b.WriteString(labelStyle.Render("Job ID") + "\n")
+	b.WriteString(mutedStyle.Render("  "+j.ID) + "\n\n")
+
+	b.WriteString(labelStyle.Render("Status") + "\n")
+	switch j.Status {
+	case domain.JobStatusCompleted:
+		b.WriteString("  " + successStyle.Render(j.Status) + "\n\n")
+	case domain.JobStatusFailed:
+		b.WriteString("  " + errorStyle.Render(j.Status) + "\n\n")
+	case domain.JobStatusRunning:
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(colorWarning).Render(j.Status) + "\n\n")
+	default:
+		b.WriteString("  " + j.Status + "\n\n")
+	}
+
+	b.WriteString(labelStyle.Render("Source") + "\n")
+	b.WriteString("  " + j.Source + "\n\n")
+
+	b.WriteString(labelStyle.Render("Attempts") + "\n")
+	b.WriteString(fmt.Sprintf("  %d / %d\n\n", j.Attempts, j.MaxAttempts))
+
+	b.WriteString(labelStyle.Render("KB") + "\n")
+	b.WriteString("  " + j.KBID + "\n\n")
+
+	if j.EpisodeID != "" {
+		b.WriteString(labelStyle.Render("Episode") + "\n")
+		b.WriteString("  " + j.EpisodeID + "\n\n")
+	}
+
+	b.WriteString(mutedStyle.Render("Created: "+j.CreatedAt.Format("Jan 02, 2006 15:04")) + "\n")
+	if j.StartedAt != nil {
+		b.WriteString(mutedStyle.Render("Started: "+j.StartedAt.Format("Jan 02, 2006 15:04")) + "\n")
+	}
+	if j.CompletedAt != nil {
+		b.WriteString(mutedStyle.Render("Completed: "+j.CompletedAt.Format("Jan 02, 2006 15:04")) + "\n")
+	}
+
+	if j.Error != "" {
+		b.WriteString("\n" + errorStyle.Render("Error") + "\n")
+		b.WriteString("  " + wordWrap(j.Error, 35) + "\n")
+	}
+
+	if len(j.Result) > 0 {
+		b.WriteString("\n" + labelStyle.Render("Result") + "\n")
+		b.WriteString("  " + wordWrap(string(j.Result), 35) + "\n")
+	}
+
+	if j.Content != "" {
+		b.WriteString("\n" + labelStyle.Render("Content") + "\n")
+		preview := strings.ReplaceAll(j.Content, "\n", " ")
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		b.WriteString("  " + wordWrap(preview, 35) + "\n")
+	}
+
 	return b.String()
 }
 

@@ -285,6 +285,8 @@ func TestMCP_ListTools(t *testing.T) {
 		"memex_delete": false, "memex_stats": false,
 		"memex_lifecycle_decay": false, "memex_lifecycle_prune": false,
 		"memex_lifecycle_consolidate": false,
+		"memex_job_list": false, "memex_job_get": false,
+		"memex_job_retry": false,
 	}
 
 	for _, tool := range result.Tools {
@@ -299,7 +301,7 @@ func TestMCP_ListTools(t *testing.T) {
 		}
 	}
 
-	if len(result.Tools) != 11 {
-		t.Errorf("expected 11 tools, got %d", len(result.Tools))
+	if len(result.Tools) != 14 {
+		t.Errorf("expected 14 tools, got %d", len(result.Tools))
 	}
 }

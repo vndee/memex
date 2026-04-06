@@ -179,6 +179,9 @@ Available MCP tools:
 | `memex_lifecycle_decay` | Run memory decay on a KB |
 | `memex_lifecycle_prune` | Prune weak memories |
 | `memex_lifecycle_consolidate` | Merge duplicate entities |
+| `memex_job_list` | List ingestion jobs (filterable by KB and status) |
+| `memex_job_get` | Get ingestion job details by ID |
+| `memex_job_retry` | Retry a failed ingestion job |
 
 ## HTTP API
 
@@ -187,6 +190,9 @@ Start with `memex serve --host 127.0.0.1 --port 8080`.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
+| GET | `/api/v1/jobs` | List jobs (query: `kb`, `status`, `limit`) |
+| GET | `/api/v1/jobs/{id}` | Get job details |
+| POST | `/api/v1/jobs/{id}/retry` | Retry a failed job |
 | POST | `/api/v1/kb` | Create KB |
 | GET | `/api/v1/kb` | List KBs |
 | GET | `/api/v1/kb/{id}` | Get KB |
@@ -216,7 +222,7 @@ Launch with `memex tui`. Vim-style navigation:
 | `/` | Search |
 | `i` | Insert memory |
 | `n` | Create new KB (wizard) |
-| `e`/`r`/`p` | Switch collection (entities/relations/episodes) |
+| `e`/`r`/`p`/`J` | Switch collection (entities/relations/episodes/jobs) |
 | `V` | Graph explorer |
 | `x`/`d` | Delete item/KB |
 | `s` | Stats |
