@@ -92,6 +92,30 @@ func TestHydrateSubgraph_UsesBatchLookups(t *testing.T) {
 	if len(hydrated.Edges) != 2 {
 		t.Fatalf("got %d edges, want 2", len(hydrated.Edges))
 	}
+	nodesByID := make(map[string]domain.SubgraphNode, len(hydrated.Nodes))
+	for _, n := range hydrated.Nodes {
+		nodesByID[n.ID] = n
+	}
+	if nodesByID["e1"].Name != "Alice" || nodesByID["e1"].Summary != "Engineer" {
+		t.Fatalf("expected hydrated node for e1, got %+v", nodesByID["e1"])
+	}
+	if nodesByID["e2"].Name != "Bob" || nodesByID["e2"].Summary != "Manager" {
+		t.Fatalf("expected hydrated node for e2, got %+v", nodesByID["e2"])
+	}
+	if nodesByID["missing"].Name != "" || nodesByID["missing"].Summary != "" {
+		t.Fatalf("expected fallback node for missing entity, got %+v", nodesByID["missing"])
+	}
+
+	edgesByID := make(map[string]domain.SubgraphEdge, len(hydrated.Edges))
+	for _, e := range hydrated.Edges {
+		edgesByID[e.ID] = e
+	}
+	if edgesByID["r1"].SourceID != "e1" || edgesByID["r1"].TargetID != "e2" || edgesByID["r1"].Type != "knows" {
+		t.Fatalf("expected hydrated edge for r1, got %+v", edgesByID["r1"])
+	}
+	if edgesByID["missing-rel"].SourceID != "e2" || edgesByID["missing-rel"].TargetID != "missing" || edgesByID["missing-rel"].Type != "mentions" {
+		t.Fatalf("expected fallback edge for missing-rel, got %+v", edgesByID["missing-rel"])
+	}
 	if store.getEntitiesByIDsCalls != 1 {
 		t.Fatalf("GetEntitiesByIDs calls = %d, want 1", store.getEntitiesByIDsCalls)
 	}
