@@ -69,11 +69,11 @@ go build -o memex ./cmd/memex/
 Text Input
     |
     v
-+-----------+     +-------------+     +-------------+      +-----------+     +-------------+
-| Ingestion | --> | Rule-Based  | -?-> | LLM Extract | --> | Entity    | --> | Relation    |
-| Queue     |     | Extract     |     | (fallback)  |      | Resolution|     | Upsert &    |
-|           |     | (zero cost) |     |             |      | & Merge   |     | Strengthen  |
-+-----------+     +-------------+     +-------------+      +-----------+     +-------------+
++-----------+     +-------------+      +-------------+      +-----------+     +-------------+
+| Ingestion | --> | Rule-Based  | -?-> | LLM Extract | ---> | Entity    | --> | Relation    |
+| Queue     |     | Extract     |      | (fallback)  |      | Resolution|     | Upsert &    |
+|           |     | (zero cost) |      |             |      | & Merge   |     | Strengthen  |
++-----------+     +-------------+      +-------------+      +-----------+     +-------------+
                                                               |
                                                               v
                                                       +---------------+
