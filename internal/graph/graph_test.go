@@ -326,6 +326,28 @@ func TestWeightedNeighbors_MinWeightFilter(t *testing.T) {
 	}
 }
 
+func TestWeightedNeighbors_PreservesShorterPathForFurtherExpansion(t *testing.T) {
+	// There are two ways to reach x:
+	// a -> x with weight 0.8 in 1 hop
+	// a -> b -> x with weight 0.9 in 2 hops
+	//
+	// With maxHops=2, y is only reachable through the shorter path to x.
+	g := New()
+	addEdge(g, "a", "x", "r1", "knows", 0.8)
+	addEdge(g, "a", "b", "r2", "knows", 0.9)
+	addEdge(g, "b", "x", "r3", "knows", 1.0)
+	addEdge(g, "x", "y", "r4", "knows", 1.0)
+
+	weights := g.WeightedNeighbors([]string{"a"}, 2, 0)
+
+	if w := weights["x"]; w < 0.89 || w > 0.91 {
+		t.Errorf("x weight: want ~0.9, got %.4f", w)
+	}
+	if w := weights["y"]; w < 0.79 || w > 0.81 {
+		t.Errorf("y weight: want ~0.8 via shorter path to x, got %.4f", w)
+	}
+}
+
 // --- PersonalizedPageRank tests ---
 
 func TestPersonalizedPageRank_ConvergesOnSeeds(t *testing.T) {

@@ -337,50 +337,49 @@ func (g *Graph) NeighborsAt(seeds []string, maxHops int, at time.Time) map[strin
 
 // --- Weighted traversal ---
 
-// WeightedNeighbors does BFS up to maxHops, tracking cumulative path weight
-// (product of edge weights). Only edges with Weight >= minWeight are traversed.
-// Returns entityID -> best cumulative weight along any path from a seed.
+// WeightedNeighbors explores paths up to maxHops, tracking cumulative path
+// weight as the product of edge weights. Only edges with Weight >= minWeight
+// are traversed. Returns entityID -> best cumulative weight along any path
+// from a seed.
+//
+// The traversal keeps only the best weight per node at each exact hop depth.
+// This bounds work by maxHops while preserving hop-limited semantics: a
+// slightly worse path that reaches a node earlier can still be the only way to
+// reach a better descendant within the remaining hop budget.
 func (g *Graph) WeightedNeighbors(seeds []string, maxHops int, minWeight float64) map[string]float64 {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	type entry struct {
-		id   string
-		hop  int
-		cumW float64
-	}
-
 	best := make(map[string]float64, len(seeds))
-	hops := make(map[string]int, len(seeds))
-	queue := make([]entry, 0, len(seeds))
+	frontier := make(map[string]float64, len(seeds))
 
 	for _, id := range seeds {
 		if _, seen := best[id]; !seen {
 			best[id] = 1.0
-			hops[id] = 0
-			queue = append(queue, entry{id, 0, 1.0})
+			frontier[id] = 1.0
 		}
 	}
 
-	for head := 0; head < len(queue); head++ {
-		cur := queue[head]
-		if cur.hop >= maxHops {
-			continue
-		}
-		for _, edges := range [][]Edge{g.forward[cur.id], g.reverse[cur.id]} {
-			for _, e := range edges {
-				if e.Weight < minWeight {
-					continue
-				}
-				newW := cur.cumW * e.Weight
-				prev, seen := best[e.TargetID]
-				if !seen || newW > prev {
-					best[e.TargetID] = newW
-					hops[e.TargetID] = cur.hop + 1
-					queue = append(queue, entry{e.TargetID, cur.hop + 1, newW})
+	for hop := 0; hop < maxHops && len(frontier) > 0; hop++ {
+		next := make(map[string]float64)
+		for id, cumW := range frontier {
+			for _, edges := range [][]Edge{g.forward[id], g.reverse[id]} {
+				for _, e := range edges {
+					if e.Weight < minWeight {
+						continue
+					}
+					newW := cumW * e.Weight
+					if prev, seen := next[e.TargetID]; seen && newW <= prev {
+						continue
+					}
+					next[e.TargetID] = newW
+					if prev, seen := best[e.TargetID]; !seen || newW > prev {
+						best[e.TargetID] = newW
+					}
 				}
 			}
 		}
+		frontier = next
 	}
 
 	return best
