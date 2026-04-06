@@ -1,0 +1,38 @@
+# Build artifacts
+/memex
+*.exe
+*.dll
+*.so
+*.dylib
+dist/
+build/
+
+# Dependencies
+vendor/
+
+# Environment & secrets
+.env
+.env.*
+
+# IDE & editor
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Test & coverage
+*.out
+*.test
+coverage.txt
+coverage.html
