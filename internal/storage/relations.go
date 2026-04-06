@@ -108,7 +108,6 @@ func (s *SQLiteStore) GetRelationsByIDs(ctx context.Context, kbID string, ids []
 			rels[r.ID] = r
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
 			return nil, fmt.Errorf("iterate relations by ids: %w", err)
 		}
 		if err := rows.Close(); err != nil {

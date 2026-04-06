@@ -68,7 +68,6 @@ func (s *SQLiteStore) GetEntitiesByIDs(ctx context.Context, kbID string, ids []s
 			entities[e.ID] = e
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
 			return nil, fmt.Errorf("iterate entities by ids: %w", err)
 		}
 		if err := rows.Close(); err != nil {
