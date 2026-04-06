@@ -55,23 +55,26 @@ func (s *SQLiteStore) GetEntitiesByIDs(ctx context.Context, kbID string, ids []s
 			args = append(args, id)
 		}
 
-		rows, err := s.db.QueryContext(ctx, query, args...)
-		if err != nil {
-			return nil, fmt.Errorf("query entities by ids: %w", err)
-		}
-		for rows.Next() {
-			e, err := scanEntity(rows)
+		if err := func() error {
+			rows, err := s.db.QueryContext(ctx, query, args...)
 			if err != nil {
-				rows.Close()
-				return nil, err
+				return fmt.Errorf("query entities by ids: %w", err)
 			}
-			entities[e.ID] = e
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate entities by ids: %w", err)
-		}
-		if err := rows.Close(); err != nil {
-			return nil, fmt.Errorf("close entities by ids rows: %w", err)
+			defer rows.Close()
+
+			for rows.Next() {
+				e, err := scanEntity(rows)
+				if err != nil {
+					return err
+				}
+				entities[e.ID] = e
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate entities by ids: %w", err)
+			}
+			return nil
+		}(); err != nil {
+			return nil, err
 		}
 	}
 	return entities, nil

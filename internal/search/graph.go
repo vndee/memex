@@ -182,28 +182,37 @@ func hydrateEntityResults(
 	scores map[string]float64,
 	limit int,
 ) ([]*domain.SearchResult, error) {
-	entitiesByID, err := store.GetEntitiesByIDs(ctx, kbID, ids)
-	if err != nil {
-		slog.Warn("graph entity batch lookup failed", "count", len(ids), "error", err)
-		return nil, fmt.Errorf("get entities by ids: %w", err)
+	if limit <= 0 || len(ids) == 0 {
+		return nil, nil
 	}
 
 	results := make([]*domain.SearchResult, 0, min(len(ids), limit))
-	for _, id := range ids {
-		if len(results) >= limit {
-			break
+	batchSize := min(len(ids), max(limit*2, 64))
+	for start := 0; start < len(ids) && len(results) < limit; start += batchSize {
+		end := min(start+batchSize, len(ids))
+		batchIDs := ids[start:end]
+
+		entitiesByID, err := store.GetEntitiesByIDs(ctx, kbID, batchIDs)
+		if err != nil {
+			slog.Warn("graph entity batch lookup failed", "count", len(batchIDs), "error", err)
+			return nil, fmt.Errorf("get entities by ids: %w", err)
 		}
-		ent, ok := entitiesByID[id]
-		if !ok {
-			continue
+		for _, id := range batchIDs {
+			if len(results) >= limit {
+				break
+			}
+			ent, ok := entitiesByID[id]
+			if !ok {
+				continue
+			}
+			results = append(results, &domain.SearchResult{
+				ID:      ent.ID,
+				KBID:    ent.KBID,
+				Type:    domain.ItemEntity,
+				Content: ent.Name + ": " + ent.Summary,
+				Score:   scores[id],
+			})
 		}
-		results = append(results, &domain.SearchResult{
-			ID:      ent.ID,
-			KBID:    ent.KBID,
-			Type:    domain.ItemEntity,
-			Content: ent.Name + ": " + ent.Summary,
-			Score:   scores[id],
-		})
 	}
 	return results, nil
 }

@@ -99,19 +99,22 @@ func (s *SQLiteStore) GetRelationsByIDs(ctx context.Context, kbID string, ids []
 		if err != nil {
 			return nil, fmt.Errorf("query relations by ids: %w", err)
 		}
-		for rows.Next() {
-			r, err := scanRelation(rows)
-			if err != nil {
-				rows.Close()
-				return nil, err
+		if err := func() error {
+			defer rows.Close()
+
+			for rows.Next() {
+				r, err := scanRelation(rows)
+				if err != nil {
+					return err
+				}
+				rels[r.ID] = r
 			}
-			rels[r.ID] = r
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate relations by ids: %w", err)
-		}
-		if err := rows.Close(); err != nil {
-			return nil, fmt.Errorf("close relations by ids rows: %w", err)
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate relations by ids: %w", err)
+			}
+			return nil
+		}(); err != nil {
+			return nil, err
 		}
 	}
 	return rels, nil
