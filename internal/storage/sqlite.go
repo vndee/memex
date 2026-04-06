@@ -47,6 +47,9 @@ type Store interface {
 	GetRelationsForEntity(ctx context.Context, kbID, entityID string) ([]*domain.Relation, error)
 	GetValidRelations(ctx context.Context, kbID string, at time.Time) ([]*domain.Relation, error)
 	ListRelations(ctx context.Context, kbID string, limit, offset int) ([]*domain.Relation, error)
+	UpsertRelation(ctx context.Context, r *domain.Relation) (bool, error)
+	DeduplicateRelationsForKB(ctx context.Context, kbID string) (int64, error)
+	DeduplicateRelationsForEntity(ctx context.Context, kbID, entityID string) (int64, error)
 
 	// Communities
 	CreateCommunity(ctx context.Context, c *domain.Community) error

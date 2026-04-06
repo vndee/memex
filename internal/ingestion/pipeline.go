@@ -187,7 +187,7 @@ func (p *Pipeline) Ingest(ctx context.Context, kbID, text string, opts IngestOpt
 	}
 
 	pendingRels := make([]*pendingRelation, 0, len(extracted.Relations))
-	seenRelations := make(map[string]struct{})
+	seenRelations := make(map[string]int) // sig → index in pendingRels
 	for _, raw := range extracted.Relations {
 		rel := normalizeExtractedRelation(raw)
 		if rel.Source == "" || rel.Target == "" || rel.Type == "" {
@@ -203,11 +203,19 @@ func (p *Pipeline) Ingest(ctx context.Context, kbID, text string, opts IngestOpt
 			continue
 		}
 
-		sig := relationSignature(sourceID, rel.Type, targetID, episode.ID)
-		if _, exists := seenRelations[sig]; exists {
+		sig := relationSignature(sourceID, rel.Type, targetID)
+		if idx, exists := seenRelations[sig]; exists {
+			// Within-batch duplicate: merge weight and keep better summary.
+			existing := pendingRels[idx]
+			existing.rel.Weight = domain.CombineWeights(existing.rel.Weight, rel.Weight)
+			better := domain.BetterSummary(existing.rel.Summary, rel.Summary)
+			if better != existing.rel.Summary {
+				existing.rel.Summary = better
+				existing.embedText = buildRelationEmbeddingText(rel)
+			}
 			continue
 		}
-		seenRelations[sig] = struct{}{}
+		seenRelations[sig] = len(pendingRels)
 
 		pendingRels = append(pendingRels, &pendingRelation{
 			rel: &domain.Relation{
@@ -259,10 +267,15 @@ func (p *Pipeline) Ingest(ctx context.Context, kbID, text string, opts IngestOpt
 	}
 
 	for _, pending := range pendingRels {
-		if err := p.store.CreateRelation(ctx, pending.rel); err != nil {
-			return result, fmt.Errorf("create relation %q: %w", pending.rel.ID, err)
+		created, err := p.store.UpsertRelation(ctx, pending.rel)
+		if err != nil {
+			return result, fmt.Errorf("upsert relation %q: %w", pending.rel.ID, err)
 		}
-		result.RelationsCreated++
+		if created {
+			result.RelationsCreated++
+		} else {
+			result.RelationsStrengthened++
+		}
 	}
 
 	return result, nil
@@ -417,19 +430,20 @@ func resolveEntityID(ctx context.Context, resolver *extraction.Resolver, name st
 	return matched.ID, true
 }
 
-func relationSignature(sourceID, relType, targetID, episodeID string) string {
-	return strings.Join([]string{sourceID, relType, targetID, episodeID}, "|")
+func relationSignature(sourceID, relType, targetID string) string {
+	return strings.Join([]string{sourceID, relType, targetID}, "|")
 }
 
 // IngestResult summarizes what happened during ingestion.
 type IngestResult struct {
-	EpisodeID        string `json:"episode_id"`
-	EntitiesCreated  int    `json:"entities_created"`
-	EntitiesUpdated  int    `json:"entities_updated"`
-	RelationsCreated int    `json:"relations_created"`
+	EpisodeID              string `json:"episode_id"`
+	EntitiesCreated        int    `json:"entities_created"`
+	EntitiesUpdated        int    `json:"entities_updated"`
+	RelationsCreated       int    `json:"relations_created"`
+	RelationsStrengthened  int    `json:"relations_strengthened"`
 }
 
 func (r *IngestResult) String() string {
-	return fmt.Sprintf("episode=%s entities_created=%d entities_updated=%d relations_created=%d",
-		r.EpisodeID, r.EntitiesCreated, r.EntitiesUpdated, r.RelationsCreated)
+	return fmt.Sprintf("episode=%s entities_created=%d entities_updated=%d relations_created=%d relations_strengthened=%d",
+		r.EpisodeID, r.EntitiesCreated, r.EntitiesUpdated, r.RelationsCreated, r.RelationsStrengthened)
 }

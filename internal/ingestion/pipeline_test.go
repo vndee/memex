@@ -227,6 +227,66 @@ func TestIngestDeduplicatesCurrentBatchAndNormalizesRelationEndpoints(t *testing
 	}
 }
 
+func TestIngestDuplicateRelationStrengthened(t *testing.T) {
+	store := newTestStore(t)
+	createKB(t, store, "kb1")
+
+	mkPipeline := func() *ingestion.Pipeline {
+		return ingestion.NewPipeline(
+			store,
+			fakeEmbedRegistry{provider: &fakeEmbedder{}},
+			fakeExtractRegistry{provider: &fakeExtractor{
+				result: &extraction.ExtractionResult{
+					Entities: []extraction.ExtractedEntity{
+						{Name: "Alice", Type: "person", Summary: "Engineer"},
+						{Name: "Project Atlas", Type: "project", Summary: "Internal platform"},
+					},
+					Relations: []extraction.ExtractedRelation{
+						{Source: "Alice", Target: "Project Atlas", Type: "works_on", Summary: "Leads the project", Weight: 0.7},
+					},
+				},
+			}},
+		)
+	}
+
+	ctx := context.Background()
+
+	// First ingest — creates the relation.
+	r1, err := mkPipeline().Ingest(ctx, "kb1", "Alice works on Atlas", ingestion.IngestOptions{Source: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.RelationsCreated != 1 {
+		t.Fatalf("first ingest: got %d relations created, want 1", r1.RelationsCreated)
+	}
+
+	// Second ingest — should strengthen, not create.
+	r2, err := mkPipeline().Ingest(ctx, "kb1", "Alice works on Atlas again", ingestion.IngestOptions{Source: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.RelationsCreated != 0 {
+		t.Errorf("second ingest: got %d relations created, want 0", r2.RelationsCreated)
+	}
+	if r2.RelationsStrengthened != 1 {
+		t.Errorf("second ingest: got %d relations strengthened, want 1", r2.RelationsStrengthened)
+	}
+
+	// Only one relation should exist.
+	rels, err := store.ListRelations(ctx, "kb1", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 1 {
+		t.Fatalf("expected 1 relation total, got %d", len(rels))
+	}
+
+	// Weight should be CombineWeights(0.7, 0.7) = 1 - 0.3*0.3 = 0.91.
+	if rels[0].Weight < 0.90 || rels[0].Weight > 0.92 {
+		t.Errorf("expected weight ~0.91, got %f", rels[0].Weight)
+	}
+}
+
 func TestIngestReturnsErrorWhenEmbeddingBatchIsInvalid(t *testing.T) {
 	store := newTestStore(t)
 	createKB(t, store, "kb1")

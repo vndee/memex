@@ -25,11 +25,12 @@ type MergePair struct {
 
 // ConsolidationResult summarizes a consolidation run.
 type ConsolidationResult struct {
-	KBID           string       `json:"kb_id"`
-	Candidates     int          `json:"candidates"`
-	Merged         int          `json:"merged"`
-	Pairs          []*MergePair `json:"pairs,omitempty"`
-	RelationsFixed int64        `json:"relations_fixed"`
+	KBID             string       `json:"kb_id"`
+	Candidates       int          `json:"candidates"`
+	Merged           int          `json:"merged"`
+	Pairs            []*MergePair `json:"pairs,omitempty"`
+	RelationsFixed   int64        `json:"relations_fixed"`
+	RelationsDeduped int64        `json:"relations_deduped"`
 }
 
 // Consolidator finds and merges duplicate entities based on embedding similarity.
@@ -97,18 +98,35 @@ func (c *Consolidator) FindCandidates(ctx context.Context, kbID string) ([]*Merg
 	return pairs, nil
 }
 
+// MergeResult holds counters from a single entity merge operation.
+type MergeResult struct {
+	RelationsRedirected int64
+	RelationsDeduped    int64
+}
+
 // Merge executes a consolidation: redirects relations from merged entity to survivor,
-// then deletes the merged entity. Returns the number of relations redirected.
-func (c *Consolidator) Merge(ctx context.Context, kbID string, pair *MergePair) (int64, error) {
+// deduplicates any resulting duplicate edges, then deletes the merged entity.
+func (c *Consolidator) Merge(ctx context.Context, kbID string, pair *MergePair) (*MergeResult, error) {
+	result := &MergeResult{}
+
 	// Redirect all relations from merged -> survivor.
 	n, err := c.store.RedirectRelations(ctx, kbID, pair.Merged.ID, pair.Survivor.ID)
 	if err != nil {
-		return 0, fmt.Errorf("redirect relations: %w", err)
+		return nil, fmt.Errorf("redirect relations: %w", err)
+	}
+	result.RelationsRedirected = n
+
+	// Deduplicate edges that became duplicates after redirect.
+	deduped, err := c.store.DeduplicateRelationsForEntity(ctx, kbID, pair.Survivor.ID)
+	if err != nil {
+		slog.Warn("consolidation: dedup after redirect failed", "entity", pair.Survivor.ID, "error", err)
+	} else {
+		result.RelationsDeduped = deduped
 	}
 
 	// Delete the merged entity.
 	if err := c.store.DeleteEntity(ctx, kbID, pair.Merged.ID); err != nil {
-		return n, fmt.Errorf("delete merged entity: %w", err)
+		return result, fmt.Errorf("delete merged entity: %w", err)
 	}
 
 	// Clean up decay state for the merged entity.
@@ -121,9 +139,10 @@ func (c *Consolidator) Merge(ctx context.Context, kbID string, pair *MergePair) 
 		"survivor_id", pair.Survivor.ID,
 		"merged_id", pair.Merged.ID,
 		"similarity", fmt.Sprintf("%.4f", pair.Score),
-		"relations_redirected", n)
+		"relations_redirected", n,
+		"relations_deduped", deduped)
 
-	return n, nil
+	return result, nil
 }
 
 // RunConsolidation finds candidates and merges them all. Returns a summary.
@@ -139,7 +158,7 @@ func (c *Consolidator) RunConsolidation(ctx context.Context, kbID string) (*Cons
 	}
 
 	for _, pair := range pairs {
-		n, err := c.Merge(ctx, kbID, pair)
+		mr, err := c.Merge(ctx, kbID, pair)
 		if err != nil {
 			slog.Error("consolidation merge failed",
 				"survivor", pair.Survivor.ID,
@@ -148,7 +167,8 @@ func (c *Consolidator) RunConsolidation(ctx context.Context, kbID string) (*Cons
 			continue
 		}
 		result.Merged++
-		result.RelationsFixed += n
+		result.RelationsFixed += mr.RelationsRedirected
+		result.RelationsDeduped += mr.RelationsDeduped
 		result.Pairs = append(result.Pairs, pair)
 	}
 

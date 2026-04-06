@@ -130,6 +130,14 @@ func (m *Manager) runPruneAll(ctx context.Context) {
 }
 
 func (m *Manager) pruneKB(ctx context.Context, kbID string, threshold float64) (int, error) {
+	// Consolidate fragmented relation edges before pruning. Combined weights
+	// may exceed the prune threshold, saving relations from deletion.
+	if deduped, err := m.store.DeduplicateRelationsForKB(ctx, kbID); err != nil {
+		slog.Warn("lifecycle: pre-prune relation dedup failed", "kb_id", kbID, "error", err)
+	} else if deduped > 0 {
+		slog.Info("lifecycle: pre-prune deduped relations", "kb_id", kbID, "deduped", deduped)
+	}
+
 	states, err := m.store.ListDecayStates(ctx, kbID, threshold)
 	if err != nil {
 		return 0, fmt.Errorf("list weak items: %w", err)
