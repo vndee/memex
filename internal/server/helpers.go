@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/vndee/memex/internal/domain"
@@ -47,10 +48,19 @@ func buildKB(id, name, desc, embedProvider, embedModel, llmProvider, llmModel st
 // HydrateSubgraph enriches a raw SubgraphResult with entity and relation metadata
 // from storage. Used by MCP, HTTP, and CLI graph traversal handlers.
 func HydrateSubgraph(ctx context.Context, store storage.Store, kbID string, sg graph.SubgraphResult) (*domain.Subgraph, error) {
+	nodeIDs := make([]string, 0, len(sg.Nodes))
+	for id := range sg.Nodes {
+		nodeIDs = append(nodeIDs, id)
+	}
+	entitiesByID, err := store.GetEntitiesByIDs(ctx, kbID, nodeIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get subgraph entities by ids: %w", err)
+	}
+
 	nodes := make([]domain.SubgraphNode, 0, len(sg.Nodes))
 	for id, dist := range sg.Nodes {
-		ent, err := store.GetEntity(ctx, kbID, id)
-		if err != nil {
+		ent, ok := entitiesByID[id]
+		if !ok {
 			nodes = append(nodes, domain.SubgraphNode{
 				ID: id, Distance: dist,
 			})
@@ -65,10 +75,19 @@ func HydrateSubgraph(ctx context.Context, store storage.Store, kbID string, sg g
 		})
 	}
 
+	edgeIDs := make([]string, 0, len(sg.Edges))
+	for _, e := range sg.Edges {
+		edgeIDs = append(edgeIDs, e.RelID)
+	}
+	relationsByID, err := store.GetRelationsByIDs(ctx, kbID, edgeIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get subgraph relations by ids: %w", err)
+	}
+
 	edges := make([]domain.SubgraphEdge, 0, len(sg.Edges))
 	for _, e := range sg.Edges {
-		rel, err := store.GetRelation(ctx, kbID, e.RelID)
-		if err != nil {
+		rel, ok := relationsByID[e.RelID]
+		if !ok {
 			edges = append(edges, domain.SubgraphEdge{
 				ID:       e.RelID,
 				SourceID: e.SourceID,

@@ -3,6 +3,7 @@ package storage_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -292,6 +293,66 @@ func TestEntityScopeEnforced(t *testing.T) {
 	}
 }
 
+func TestGetEntitiesByIDs(t *testing.T) {
+	store := newTestStore(t)
+	createTestKB(t, store, "kb1")
+	createTestKB(t, store, "kb2")
+
+	now := time.Now().UTC()
+	for _, e := range []*domain.Entity{
+		{ID: "ent-001", KBID: "kb1", Name: "Alice", Type: "person", CreatedAt: now, UpdatedAt: now},
+		{ID: "ent-002", KBID: "kb1", Name: "Bob", Type: "person", CreatedAt: now, UpdatedAt: now},
+		{ID: "ent-003", KBID: "kb2", Name: "Charlie", Type: "person", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.CreateEntity(context.Background(), e); err != nil {
+			t.Fatal("create entity:", err)
+		}
+	}
+
+	entities, err := store.GetEntitiesByIDs(context.Background(), "kb1", []string{"ent-001", "ent-002", "ent-003", "ent-missing"})
+	if err != nil {
+		t.Fatal("get entities by ids:", err)
+	}
+	if len(entities) != 2 {
+		t.Fatalf("got %d entities, want 2", len(entities))
+	}
+	if entities["ent-001"] == nil || entities["ent-001"].Name != "Alice" {
+		t.Fatal("expected ent-001 (Alice) in result")
+	}
+	if entities["ent-002"] == nil || entities["ent-002"].Name != "Bob" {
+		t.Fatal("expected ent-002 (Bob) in result")
+	}
+	if _, ok := entities["ent-003"]; ok {
+		t.Fatal("did not expect kb2 entity in kb1 result")
+	}
+}
+
+func TestGetEntitiesByIDs_LargeBatch(t *testing.T) {
+	store := newTestStore(t)
+	createTestKB(t, store, "kb1")
+	now := time.Now().UTC()
+
+	const n = 905
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("ent-%04d", i)
+		ids = append(ids, id)
+		if err := store.CreateEntity(context.Background(), &domain.Entity{
+			ID: id, KBID: "kb1", Name: id, Type: "entity", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal("create entity:", err)
+		}
+	}
+
+	entities, err := store.GetEntitiesByIDs(context.Background(), "kb1", ids)
+	if err != nil {
+		t.Fatal("get entities by ids:", err)
+	}
+	if len(entities) != n {
+		t.Fatalf("got %d entities, want %d", len(entities), n)
+	}
+}
+
 // --- Relation tests ---
 
 func TestRelationCRUD(t *testing.T) {
@@ -426,6 +487,47 @@ func TestRelationScopeAndKBBoundaryEnforced(t *testing.T) {
 	}
 	if err := store.CreateRelation(context.Background(), crossKB); err == nil {
 		t.Fatal("expected cross-KB relation creation to fail")
+	}
+}
+
+func TestGetRelationsByIDs(t *testing.T) {
+	store := newTestStore(t)
+	createTestKB(t, store, "kb1")
+	createTestKB(t, store, "kb2")
+
+	now := time.Now().UTC()
+	for _, e := range []*domain.Entity{
+		{ID: "ent-a", KBID: "kb1", Name: "Alice", Type: "person", CreatedAt: now, UpdatedAt: now},
+		{ID: "ent-b", KBID: "kb1", Name: "Bob", Type: "person", CreatedAt: now, UpdatedAt: now},
+		{ID: "ent-c", KBID: "kb2", Name: "Carol", Type: "person", CreatedAt: now, UpdatedAt: now},
+		{ID: "ent-d", KBID: "kb2", Name: "Dan", Type: "person", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.CreateEntity(context.Background(), e); err != nil {
+			t.Fatal("create entity:", err)
+		}
+	}
+
+	for _, r := range []*domain.Relation{
+		{ID: "rel-001", KBID: "kb1", SourceID: "ent-a", TargetID: "ent-b", Type: "knows", Weight: 1, ValidAt: now, CreatedAt: now},
+		{ID: "rel-002", KBID: "kb2", SourceID: "ent-c", TargetID: "ent-d", Type: "knows", Weight: 1, ValidAt: now, CreatedAt: now},
+	} {
+		if err := store.CreateRelation(context.Background(), r); err != nil {
+			t.Fatal("create relation:", err)
+		}
+	}
+
+	rels, err := store.GetRelationsByIDs(context.Background(), "kb1", []string{"rel-001", "rel-002", "rel-missing"})
+	if err != nil {
+		t.Fatal("get relations by ids:", err)
+	}
+	if len(rels) != 1 {
+		t.Fatalf("got %d relations, want 1", len(rels))
+	}
+	if rels["rel-001"] == nil || rels["rel-001"].SourceID != "ent-a" || rels["rel-001"].TargetID != "ent-b" {
+		t.Fatal("expected rel-001 with correct endpoints")
+	}
+	if _, ok := rels["rel-002"]; ok {
+		t.Fatal("did not expect kb2 relation in kb1 result")
 	}
 }
 

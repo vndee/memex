@@ -74,6 +74,50 @@ func (s *SQLiteStore) GetRelation(ctx context.Context, kbID, id string) (*domain
 	return scanRelation(row)
 }
 
+func (s *SQLiteStore) GetRelationsByIDs(ctx context.Context, kbID string, ids []string) (map[string]*domain.Relation, error) {
+	rels := make(map[string]*domain.Relation)
+	if len(ids) == 0 {
+		return rels, nil
+	}
+
+	const maxBatchIDs = 900
+	for start := 0; start < len(ids); start += maxBatchIDs {
+		end := min(start+maxBatchIDs, len(ids))
+		batch := ids[start:end]
+
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		query := `SELECT id, kb_id, source_id, target_id, type, summary, weight, embedding, episode_id, valid_at, invalid_at, created_at
+			FROM relations WHERE kb_id = ? AND id IN (` + placeholders + `)`
+
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, kbID)
+		for _, id := range batch {
+			args = append(args, id)
+		}
+
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("query relations by ids: %w", err)
+		}
+		for rows.Next() {
+			r, err := scanRelation(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			rels[r.ID] = r
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate relations by ids: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close relations by ids rows: %w", err)
+		}
+	}
+	return rels, nil
+}
+
 func (s *SQLiteStore) InvalidateRelation(ctx context.Context, kbID, id string, invalidAt time.Time) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE relations SET invalid_at = ? WHERE kb_id = ? AND id = ? AND invalid_at IS NULL`,

@@ -2,8 +2,6 @@ package search
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -184,18 +182,20 @@ func hydrateEntityResults(
 	scores map[string]float64,
 	limit int,
 ) ([]*domain.SearchResult, error) {
+	entitiesByID, err := store.GetEntitiesByIDs(ctx, kbID, ids)
+	if err != nil {
+		slog.Warn("graph entity batch lookup failed", "count", len(ids), "error", err)
+		return nil, fmt.Errorf("get entities by ids: %w", err)
+	}
+
 	results := make([]*domain.SearchResult, 0, min(len(ids), limit))
 	for _, id := range ids {
 		if len(results) >= limit {
 			break
 		}
-		ent, err := store.GetEntity(ctx, kbID, id)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			slog.Warn("graph entity lookup failed", "id", id, "error", err)
-			return nil, fmt.Errorf("get entity %s: %w", id, err)
+		ent, ok := entitiesByID[id]
+		if !ok {
+			continue
 		}
 		results = append(results, &domain.SearchResult{
 			ID:      ent.ID,

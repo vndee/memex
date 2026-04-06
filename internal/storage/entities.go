@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/vndee/memex/internal/domain"
@@ -31,6 +32,50 @@ func (s *SQLiteStore) GetEntity(ctx context.Context, kbID, id string) (*domain.E
 		 FROM entities WHERE kb_id = ? AND id = ?`, kbID, id)
 
 	return scanEntity(row)
+}
+
+func (s *SQLiteStore) GetEntitiesByIDs(ctx context.Context, kbID string, ids []string) (map[string]*domain.Entity, error) {
+	entities := make(map[string]*domain.Entity)
+	if len(ids) == 0 {
+		return entities, nil
+	}
+
+	const maxBatchIDs = 900
+	for start := 0; start < len(ids); start += maxBatchIDs {
+		end := min(start+maxBatchIDs, len(ids))
+		batch := ids[start:end]
+
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		query := `SELECT id, kb_id, name, type, summary, embedding, created_at, updated_at
+			FROM entities WHERE kb_id = ? AND id IN (` + placeholders + `)`
+
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, kbID)
+		for _, id := range batch {
+			args = append(args, id)
+		}
+
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("query entities by ids: %w", err)
+		}
+		for rows.Next() {
+			e, err := scanEntity(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			entities[e.ID] = e
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("iterate entities by ids: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close entities by ids rows: %w", err)
+		}
+	}
+	return entities, nil
 }
 
 func (s *SQLiteStore) UpdateEntity(ctx context.Context, e *domain.Entity) error {
