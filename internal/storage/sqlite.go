@@ -85,6 +85,15 @@ type Store interface {
 	LoadEntityEmbeddings(ctx context.Context, kbID string) (map[string][]float32, error)
 	LoadRelationEmbeddings(ctx context.Context, kbID string) (map[string][]float32, error)
 
+	// Episode counts
+	CountEpisodesBySourcePrefix(ctx context.Context, kbID, prefix string) (int, error)
+
+	// Feedback
+	CreateFeedback(ctx context.Context, fb *domain.Feedback) error
+	SearchFeedback(ctx context.Context, kbID, query string, limit int) ([]*domain.Feedback, error)
+	ListFeedbackByTopic(ctx context.Context, kbID, topic string, limit int) ([]*domain.Feedback, error)
+	GetFeedbackStats(ctx context.Context, kbID string) (*domain.FeedbackStats, error)
+
 	// Consolidation
 	RedirectRelations(ctx context.Context, kbID, fromEntityID, toEntityID string) (int64, error)
 	DeleteDecayState(ctx context.Context, kbID, entityType, entityID string) error

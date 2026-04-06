@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -35,6 +36,8 @@ const (
 	collRelations
 	collEpisodes
 	collJobs
+	collFeedback
+	collCommunities
 	collSearchResults
 )
 
@@ -48,6 +51,10 @@ func (c collection) String() string {
 		return "Episodes"
 	case collJobs:
 		return "Jobs"
+	case collFeedback:
+		return "Feedback"
+	case collCommunities:
+		return "Communities"
 	case collSearchResults:
 		return "Search Results"
 	default:
@@ -65,6 +72,10 @@ func (c collection) shortKey() string {
 		return "p"
 	case collJobs:
 		return "J"
+	case collFeedback:
+		return "f"
+	case collCommunities:
+		return "c"
 	default:
 		return ""
 	}
@@ -86,13 +97,15 @@ type model struct {
 	activeKB string
 
 	// Content table (center pane)
-	coll       collection
-	contentTbl table.Model
-	entities   []*domain.Entity
-	relations  []*domain.Relation
-	episodes   []*domain.Episode
-	jobs       []*domain.IngestionJob
-	results    []*domain.SearchResult
+	coll        collection
+	contentTbl  table.Model
+	entities    []*domain.Entity
+	relations   []*domain.Relation
+	episodes    []*domain.Episode
+	jobs        []*domain.IngestionJob
+	feedback    []*domain.Feedback
+	communities []*domain.Community
+	results     []*domain.SearchResult
 
 	// Entity name cache for relation display
 	entityNames map[string]string // id -> name
@@ -105,9 +118,20 @@ type model struct {
 	searching   bool
 	lastQuery   string
 
+	// Feedback search mode (? key)
+	feedbackSearchInput textinput.Model
+	feedbackSearching   bool
+
 	// Insert mode
 	insertInput textinput.Model
 	inserting   bool
+
+	// Feedback recording (F key)
+	feedbackRecording bool
+	feedbackStep      int // 0=topic, 1=content, 2=correction
+	fbTopicInput      textinput.Model
+	fbContentInput    textinput.Model
+	fbCorrectionInput textinput.Model
 
 	// KB creation wizard
 	wizard     *kbWizard
@@ -117,8 +141,10 @@ type model struct {
 	confirm *confirmDialog
 
 	// Stats overlay
-	showStats bool
-	stats     *domain.MemoryStats
+	showStats     bool
+	stats         *domain.MemoryStats
+	fbStats       *domain.FeedbackStats
+	hookCount     int
 
 	// Status bar
 	statusMsg  string
@@ -162,17 +188,37 @@ func New(store storage.Store, searcher *search.Searcher, sched *ingestion.Schedu
 
 	vp := viewport.New(30, 10)
 
+	fsi := textinput.New()
+	fsi.Placeholder = "search feedback..."
+	fsi.CharLimit = 200
+
+	fbTopic := textinput.New()
+	fbTopic.Placeholder = "topic (e.g. extraction, search)"
+	fbTopic.CharLimit = 100
+
+	fbContent := textinput.New()
+	fbContent.Placeholder = "what went wrong?"
+	fbContent.CharLimit = 500
+
+	fbCorrection := textinput.New()
+	fbCorrection.Placeholder = "correct answer (optional)"
+	fbCorrection.CharLimit = 500
+
 	return model{
-		store:       store,
-		searcher:    searcher,
-		sched:       sched,
-		focus:       paneKB,
-		coll:        collEntities,
-		contentTbl:  tbl,
-		inspector:   vp,
-		searchInput: ti,
-		insertInput: ii,
-		entityNames: make(map[string]string),
+		store:               store,
+		searcher:            searcher,
+		sched:               sched,
+		focus:               paneKB,
+		coll:                collEntities,
+		contentTbl:          tbl,
+		inspector:           vp,
+		searchInput:         ti,
+		insertInput:         ii,
+		feedbackSearchInput: fsi,
+		fbTopicInput:        fbTopic,
+		fbContentInput:      fbContent,
+		fbCorrectionInput:   fbCorrection,
+		entityNames:         make(map[string]string),
 	}
 }
 
@@ -193,8 +239,10 @@ type deleteDoneMsg struct {
 	err  error
 }
 type statusMsg string
-type statusClearMsg struct{}
 type entityNamesMsg map[string]string
+type feedbackLoadedMsg []*domain.Feedback
+type communitiesLoadedMsg []*domain.Community
+type feedbackRecordedMsg struct{ err error }
 
 // --- Init ---
 
@@ -247,6 +295,8 @@ func (m model) loadContent() tea.Cmd {
 				return statusMsg(fmt.Sprintf("error: %v", err))
 			}
 			msg.jobs = jobs
+		case collFeedback, collCommunities:
+			// These are loaded via their own dedicated commands.
 		}
 		return msg
 	}
@@ -265,6 +315,52 @@ func (m model) loadEntityNames() tea.Cmd {
 			names[e.ID] = e.Name
 		}
 		return entityNamesMsg(names)
+	}
+}
+
+func (m model) loadFeedback() tea.Cmd {
+	kbID := m.activeKB
+	store := m.store
+	return func() tea.Msg {
+		fb, err := store.ListFeedbackByTopic(context.Background(), kbID, "", 500)
+		if err != nil {
+			return statusMsg(fmt.Sprintf("error loading feedback: %v", err))
+		}
+		return feedbackLoadedMsg(fb)
+	}
+}
+
+func (m model) loadCommunities() tea.Cmd {
+	kbID := m.activeKB
+	store := m.store
+	return func() tea.Msg {
+		comms, err := store.ListCommunities(context.Background(), kbID)
+		if err != nil {
+			return statusMsg(fmt.Sprintf("error loading communities: %v", err))
+		}
+		return communitiesLoadedMsg(comms)
+	}
+}
+
+func (m model) doSearchFeedback(query string) tea.Cmd {
+	kbID := m.activeKB
+	store := m.store
+	return func() tea.Msg {
+		fb, err := store.SearchFeedback(context.Background(), kbID, query, 50)
+		if err != nil {
+			return statusMsg(fmt.Sprintf("feedback search error: %v", err))
+		}
+		return feedbackLoadedMsg(fb)
+	}
+}
+
+func (m model) doRecordFeedback(topic, content, correction string) tea.Cmd {
+	kbID := m.activeKB
+	store := m.store
+	return func() tea.Msg {
+		fb := domain.NewFeedback(kbID, topic, content, correction, "tui")
+		err := store.CreateFeedback(context.Background(), fb)
+		return feedbackRecordedMsg{err: err}
 	}
 }
 
@@ -325,15 +421,31 @@ func (m model) doDeleteKB(id string) tea.Cmd {
 	}
 }
 
-func (m model) loadStats() tea.Cmd {
+type combinedStatsMsg struct {
+	stats   *domain.MemoryStats
+	fbStats *domain.FeedbackStats
+	hooks   int
+}
+
+func (m model) loadCombinedStats() tea.Cmd {
 	kbID := m.activeKB
 	store := m.store
 	return func() tea.Msg {
-		stats, err := store.GetStats(context.Background(), kbID)
+		ctx := context.Background()
+		stats, err := store.GetStats(ctx, kbID)
 		if err != nil {
 			return statusMsg(fmt.Sprintf("error: %v", err))
 		}
-		return statsLoadedMsg(stats)
+		fbStats, err := store.GetFeedbackStats(ctx, kbID)
+		if err != nil {
+			slog.Warn("failed to load feedback stats", "error", err)
+			fbStats = &domain.FeedbackStats{KBID: kbID, TopicCounts: make(map[string]int)}
+		}
+		hookCount, err := store.CountEpisodesBySourcePrefix(ctx, kbID, "hook:")
+		if err != nil {
+			slog.Warn("failed to count hook episodes", "error", err)
+		}
+		return combinedStatsMsg{stats: stats, fbStats: fbStats, hooks: hookCount}
 	}
 }
 
@@ -389,6 +501,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.graphV != nil {
 			m.graphV.handleFocused(msg)
 		}
+		return m, nil
+
+	case feedbackLoadedMsg:
+		m.feedback = msg
+		m.coll = collFeedback
+		m.rebuildTable()
+		m.updateInspector()
+		return m, nil
+
+	case communitiesLoadedMsg:
+		m.communities = msg
+		m.coll = collCommunities
+		m.rebuildTable()
+		m.updateInspector()
+		return m, nil
+
+	case feedbackRecordedMsg:
+		m.feedbackRecording = false
+		if msg.err != nil {
+			m.setStatus(fmt.Sprintf("feedback failed: %v", msg.err))
+		} else {
+			m.setStatus("feedback recorded")
+		}
+		return m, nil
+
+	case combinedStatsMsg:
+		m.stats = msg.stats
+		m.fbStats = msg.fbStats
+		m.hookCount = msg.hooks
+		m.showStats = true
 		return m, nil
 
 	case statsLoadedMsg:
@@ -555,6 +697,77 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Feedback search mode (? key).
+	if m.feedbackSearching {
+		switch key {
+		case "enter":
+			query := m.feedbackSearchInput.Value()
+			m.feedbackSearching = false
+			m.feedbackSearchInput.Blur()
+			if query != "" && m.activeKB != "" {
+				return m, m.doSearchFeedback(query)
+			}
+			return m, nil
+		case "esc":
+			m.feedbackSearching = false
+			m.feedbackSearchInput.Blur()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.feedbackSearchInput, cmd = m.feedbackSearchInput.Update(msg)
+		return m, cmd
+	}
+
+	// Feedback recording mode (F key).
+	if m.feedbackRecording {
+		switch key {
+		case "enter":
+			switch m.feedbackStep {
+			case 0:
+				m.fbTopicInput.Blur()
+				m.feedbackStep = 1
+				m.fbContentInput.Focus()
+				return m, textinput.Blink
+			case 1:
+				m.fbContentInput.Blur()
+				m.feedbackStep = 2
+				m.fbCorrectionInput.Focus()
+				return m, textinput.Blink
+			case 2:
+				topic := m.fbTopicInput.Value()
+				content := m.fbContentInput.Value()
+				correction := m.fbCorrectionInput.Value()
+				m.fbCorrectionInput.Blur()
+				if content != "" {
+					return m, m.doRecordFeedback(topic, content, correction)
+				}
+				m.feedbackRecording = false
+				return m, nil
+			}
+		case "esc":
+			m.feedbackRecording = false
+			m.fbTopicInput.Blur()
+			m.fbContentInput.Blur()
+			m.fbCorrectionInput.Blur()
+			return m, nil
+		}
+		switch m.feedbackStep {
+		case 0:
+			var cmd tea.Cmd
+			m.fbTopicInput, cmd = m.fbTopicInput.Update(msg)
+			return m, cmd
+		case 1:
+			var cmd tea.Cmd
+			m.fbContentInput, cmd = m.fbContentInput.Update(msg)
+			return m, cmd
+		case 2:
+			var cmd tea.Cmd
+			m.fbCorrectionInput, cmd = m.fbCorrectionInput.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+	}
+
 	// Normal mode.
 	switch key {
 	case "q":
@@ -602,9 +815,40 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "J":
 		m.coll = collJobs
 		return m, m.loadContent()
+	case "f":
+		if m.activeKB != "" {
+			return m, m.loadFeedback()
+		}
+		return m, nil
+	case "c":
+		if m.activeKB != "" {
+			return m, m.loadCommunities()
+		}
+		return m, nil
+	case "F":
+		if m.activeKB == "" {
+			m.setStatus("select a KB first")
+			return m, nil
+		}
+		m.feedbackRecording = true
+		m.feedbackStep = 0
+		m.fbTopicInput.SetValue("")
+		m.fbContentInput.SetValue("")
+		m.fbCorrectionInput.SetValue("")
+		m.fbTopicInput.Focus()
+		return m, textinput.Blink
+	case "?":
+		if m.activeKB != "" {
+			m.feedbackSearching = true
+			m.feedbackSearchInput.SetValue("")
+			m.feedbackSearchInput.Focus()
+			return m, textinput.Blink
+		}
+		m.showHelp = true
+		return m, nil
 	case "s":
 		if m.activeKB != "" {
-			return m, m.loadStats()
+			return m, m.loadCombinedStats()
 		}
 		return m, nil
 	case "x":
@@ -652,9 +896,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.graphV = newGraphView(m.store, m.activeKB, originIDs)
 		m.showGraph = true
 		return m, m.graphV.loadNode(startID)
-	case "?":
-		m.showHelp = true
-		return m, nil
 	}
 
 	// Pane-specific keys.
@@ -940,6 +1181,30 @@ func (m *model) rebuildTable() {
 		}
 		m.contentTbl.SetRows(rows)
 
+	case collFeedback:
+		m.contentTbl.SetColumns(feedbackColumns(contentW))
+		rows := make([]table.Row, len(m.feedback))
+		for i, fb := range m.feedback {
+			rows[i] = table.Row{
+				truncStr(fb.Topic, 14),
+				truncStr(strings.ReplaceAll(fb.Content, "\n", " "), contentW/2),
+				fb.CreatedAt.Format("Jan 02 15:04"),
+			}
+		}
+		m.contentTbl.SetRows(rows)
+
+	case collCommunities:
+		m.contentTbl.SetColumns(communityColumns(contentW))
+		rows := make([]table.Row, len(m.communities))
+		for i, c := range m.communities {
+			rows[i] = table.Row{
+				truncStr(c.Name, contentW/3),
+				fmt.Sprintf("%d", len(c.MemberIDs)),
+				truncStr(c.Summary, contentW/2),
+			}
+		}
+		m.contentTbl.SetRows(rows)
+
 	case collSearchResults:
 		m.contentTbl.SetColumns(searchColumns(contentW))
 		rows := make([]table.Row, len(m.results))
@@ -974,6 +1239,14 @@ func (m *model) updateInspector() {
 	case collJobs:
 		if idx >= 0 && idx < len(m.jobs) {
 			content = renderJobDetail(m.jobs[idx])
+		}
+	case collFeedback:
+		if idx >= 0 && idx < len(m.feedback) {
+			content = renderFeedbackDetail(m.feedback[idx])
+		}
+	case collCommunities:
+		if idx >= 0 && idx < len(m.communities) {
+			content = renderCommunityDetail(m.communities[idx])
 		}
 	case collSearchResults:
 		if idx >= 0 && idx < len(m.results) {
@@ -1103,6 +1376,8 @@ func (m model) renderTabs() string {
 		{collRelations, "Relations"},
 		{collEpisodes, "Episodes"},
 		{collJobs, "Jobs"},
+		{collFeedback, "Feedback"},
+		{collCommunities, "Communities"},
 	}
 
 	var parts []string
@@ -1132,6 +1407,10 @@ func (m model) collectionCount() int {
 		return len(m.episodes)
 	case collJobs:
 		return len(m.jobs)
+	case collFeedback:
+		return len(m.feedback)
+	case collCommunities:
+		return len(m.communities)
 	case collSearchResults:
 		return len(m.results)
 	}
@@ -1147,6 +1426,21 @@ func (m model) renderStatusBar() string {
 	var left string
 	if m.searching {
 		left = " / " + m.searchInput.View()
+	} else if m.feedbackSearching {
+		left = " ? " + m.feedbackSearchInput.View()
+	} else if m.feedbackRecording {
+		labels := []string{"topic", "content", "correction"}
+		step := labels[m.feedbackStep]
+		var input string
+		switch m.feedbackStep {
+		case 0:
+			input = m.fbTopicInput.View()
+		case 1:
+			input = m.fbContentInput.View()
+		case 2:
+			input = m.fbCorrectionInput.View()
+		}
+		left = fmt.Sprintf(" F [%s] %s", step, input)
 	} else if m.inserting {
 		left = " > " + m.insertInput.View()
 	} else if m.statusMsg != "" {
@@ -1164,12 +1458,11 @@ func (m model) renderStatusBar() string {
 		{"h/l", "panes"},
 		{"j/k", "nav"},
 		{"/", "search"},
+		{"?", "feedback"},
 		{"i", "insert"},
-		{"n", "new"},
-		{"e/r/p/J", "collections"},
+		{"F", "correct"},
+		{"e/r/p/J/f/c", "tabs"},
 		{"V", "graph"},
-		{"x", "del"},
-		{"?", "help"},
 	})
 
 	leftW := w / 2
@@ -1214,16 +1507,20 @@ func (m model) renderHelp() string {
     r                  Show relations
     p                  Show episodes
     J (shift+j)        Show ingestion jobs
+    f                  Show feedback / corrections
+    c                  Show communities
 
   ` + labelStyle.Render("Actions") + `
     /                  Search (hybrid semantic + keyword)
+    ?                  Search past feedback / corrections
     i                  Insert new memory
+    F (shift+f)        Record feedback (correct a mistake)
     x                  Delete selected item
-    s                  Show KB stats
+    s                  Show KB stats (with feedback stats)
     V (shift+v)        Graph visualization of results
 
   ` + labelStyle.Render("General") + `
-    ?                  Toggle this help
+    ctrl+?             Toggle this help (when no KB selected)
     q / ctrl+c         Quit
 `
 	w := min(m.width-4, 60)
@@ -1250,6 +1547,22 @@ func (m model) renderStats() string {
 		labelStyle.Render("Communities: ") + fmt.Sprintf("%d", st.TotalCommunities) + "\n" +
 		labelStyle.Render("DB Size:     ") + formatBytes(st.DBSizeBytes) + "\n"
 
+	if m.hookCount > 0 {
+		content += labelStyle.Render("Hook Captures: ") +
+			lipgloss.NewStyle().Foreground(colorWarning).Render(fmt.Sprintf("%d", m.hookCount)) + "\n"
+	}
+
+	if m.fbStats != nil && m.fbStats.TotalCount > 0 {
+		content += "\n" + titleStyle.Render("Feedback") + "\n"
+		content += labelStyle.Render("Total:       ") + fmt.Sprintf("%d corrections\n", m.fbStats.TotalCount)
+		for topic, count := range m.fbStats.TopicCounts {
+			if topic == "" {
+				topic = "(no topic)"
+			}
+			content += labelStyle.Render("  "+topic+": ") + fmt.Sprintf("%d\n", count)
+		}
+	}
+
 	if !st.LastIngestion.IsZero() {
 		content += "\n" + mutedStyle.Render("Last ingestion: "+st.LastIngestion.Format("Jan 02, 15:04"))
 	}
@@ -1257,7 +1570,7 @@ func (m model) renderStats() string {
 	content += "\n\n" + helpStyle.Render("press any key to close")
 
 	w := min(m.width-4, 55)
-	h := min(m.height-2, 18)
+	h := min(m.height-2, 24)
 	return activePaneStyle.Width(w).Height(h).Padding(1, 2).Render(content)
 }
 
@@ -1336,6 +1649,34 @@ func jobColumns(totalW int) []table.Column {
 	}
 }
 
+func feedbackColumns(totalW int) []table.Column {
+	topicW := 14
+	dateW := 14
+	contentW := totalW - topicW - dateW - 4
+	if contentW < 20 {
+		contentW = 20
+	}
+	return []table.Column{
+		{Title: "Topic", Width: topicW},
+		{Title: "Content", Width: contentW},
+		{Title: "Date", Width: dateW},
+	}
+}
+
+func communityColumns(totalW int) []table.Column {
+	nameW := totalW / 3
+	membersW := 8
+	sumW := totalW - nameW - membersW - 4
+	if sumW < 10 {
+		sumW = 10
+	}
+	return []table.Column{
+		{Title: "Name", Width: nameW},
+		{Title: "Members", Width: membersW},
+		{Title: "Summary", Width: sumW},
+	}
+}
+
 // --- Detail renderers ---
 
 func renderEntityDetail(e *domain.Entity) string {
@@ -1381,7 +1722,12 @@ func renderEpisodeDetail(ep *domain.Episode) string {
 	b.WriteString(labelStyle.Render("Episode") + "\n")
 	b.WriteString(mutedStyle.Render("  "+ep.ID) + "\n\n")
 	b.WriteString(labelStyle.Render("Source") + "\n")
-	b.WriteString("  " + ep.Source + "\n\n")
+	b.WriteString("  " + ep.Source)
+	// Show extraction method tag
+	if strings.HasPrefix(ep.Source, "hook:") {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render("[hook]"))
+	}
+	b.WriteString("\n\n")
 	b.WriteString(labelStyle.Render("Content") + "\n")
 	b.WriteString("  " + wordWrap(ep.Content, 35) + "\n\n")
 	b.WriteString(mutedStyle.Render("Created: "+ep.CreatedAt.Format("Jan 02, 2006 15:04")))
@@ -1464,6 +1810,47 @@ func renderJobDetail(j *domain.IngestionJob) string {
 		b.WriteString("  " + wordWrap(preview, 35) + "\n")
 	}
 
+	return b.String()
+}
+
+func renderFeedbackDetail(fb *domain.Feedback) string {
+	var b strings.Builder
+	b.WriteString(labelStyle.Render("Topic") + "\n")
+	if fb.Topic != "" {
+		b.WriteString("  " + fb.Topic + "\n\n")
+	} else {
+		b.WriteString("  " + mutedStyle.Render("(none)") + "\n\n")
+	}
+	b.WriteString(labelStyle.Render("Content") + "\n")
+	b.WriteString("  " + wordWrap(fb.Content, 35) + "\n\n")
+	if fb.Correction != "" {
+		b.WriteString(successStyle.Render("Correction") + "\n")
+		b.WriteString("  " + wordWrap(fb.Correction, 35) + "\n\n")
+	}
+	b.WriteString(labelStyle.Render("Source") + "\n")
+	b.WriteString("  " + fb.Source + "\n\n")
+	b.WriteString(mutedStyle.Render("ID: "+fb.ID) + "\n")
+	b.WriteString(mutedStyle.Render("Created: "+fb.CreatedAt.Format("Jan 02, 2006 15:04")))
+	return b.String()
+}
+
+func renderCommunityDetail(c *domain.Community) string {
+	var b strings.Builder
+	b.WriteString(labelStyle.Render("Name") + "\n")
+	b.WriteString("  " + c.Name + "\n\n")
+	b.WriteString(labelStyle.Render("Summary") + "\n")
+	b.WriteString("  " + wordWrap(c.Summary, 35) + "\n\n")
+	b.WriteString(labelStyle.Render("Members") + "\n")
+	b.WriteString(fmt.Sprintf("  %d entities\n\n", len(c.MemberIDs)))
+	for i, id := range c.MemberIDs {
+		if i >= 10 {
+			b.WriteString(mutedStyle.Render(fmt.Sprintf("  ... and %d more", len(c.MemberIDs)-10)) + "\n")
+			break
+		}
+		b.WriteString("  " + mutedStyle.Render(id[:safeLen(id, 12)]+"...") + "\n")
+	}
+	b.WriteString("\n" + mutedStyle.Render("ID: "+c.ID) + "\n")
+	b.WriteString(mutedStyle.Render("Created: "+c.CreatedAt.Format("Jan 02, 2006 15:04")))
 	return b.String()
 }
 

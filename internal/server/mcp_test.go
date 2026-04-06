@@ -280,6 +280,7 @@ func TestMCP_ListTools(t *testing.T) {
 
 	expectedTools := map[string]bool{
 		"memex_kb_create": false, "memex_kb_list": false,
+		"memex_kb_get": false, "memex_kb_delete": false,
 		"memex_store": false, "memex_search": false,
 		"memex_entities": false, "memex_relations": false,
 		"memex_delete": false, "memex_stats": false,
@@ -287,6 +288,11 @@ func TestMCP_ListTools(t *testing.T) {
 		"memex_lifecycle_consolidate": false,
 		"memex_job_list": false, "memex_job_get": false,
 		"memex_job_retry": false,
+		"memex_feedback_record": false, "memex_feedback_search": false,
+		"memex_feedback_stats": false,
+		"memex_episode_list": false, "memex_episode_get": false,
+		"memex_entity_get": false, "memex_relation_get": false,
+		"memex_community_list": false,
 	}
 
 	for _, tool := range result.Tools {
@@ -301,7 +307,7 @@ func TestMCP_ListTools(t *testing.T) {
 		}
 	}
 
-	if len(result.Tools) != 14 {
-		t.Errorf("expected 14 tools, got %d", len(result.Tools))
+	if len(result.Tools) != 24 {
+		t.Errorf("expected 24 tools, got %d", len(result.Tools))
 	}
 }

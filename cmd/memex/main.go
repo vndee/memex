@@ -19,12 +19,14 @@ import (
 	"github.com/vndee/memex/internal/domain"
 	"github.com/vndee/memex/internal/embedding"
 	"github.com/vndee/memex/internal/extraction"
+	"github.com/vndee/memex/internal/hooks"
 	"github.com/vndee/memex/internal/ingestion"
 	"github.com/vndee/memex/internal/lifecycle"
 	"github.com/vndee/memex/internal/notify"
 	"github.com/vndee/memex/internal/tui"
 	"github.com/vndee/memex/internal/search"
 	"github.com/vndee/memex/internal/server"
+	"github.com/vndee/memex/internal/setup"
 	"github.com/vndee/memex/internal/storage"
 )
 
@@ -62,6 +64,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown kb subcommand: %s\n", args[0])
 			os.Exit(1)
 		}
+	case "init":
+		cmdInit(args)
+	case "hook":
+		cmdHook(args)
 	case "store":
 		cmdStore(args)
 	case "search":
@@ -88,6 +94,8 @@ func printUsage() {
 
 Usage:
   memex version                              Print version
+  memex init [--editor <name>] [--dry-run]   Auto-configure AI editors (Claude Code, Cursor, etc.)
+  memex hook <post|compact|prompt> [flags]   Process hook events from AI editors
   memex kb create <id> [flags]               Create a knowledge base
   memex kb list [flags]                      List knowledge bases
   memex kb delete <id> [flags]               Delete a knowledge base
@@ -156,6 +164,89 @@ func printJSON(v any) {
 }
 
 // --- Commands ---
+
+func cmdInit(args []string) {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	editor := fs.String("editor", "", "configure only this editor (e.g. 'Claude Code', 'Cursor')")
+	db := fs.String("db", "", "database path to use in MCP config")
+	dryRun := fs.Bool("dry-run", false, "show what would change without writing")
+	force := fs.Bool("force", false, "overwrite existing memex entries")
+	fs.Parse(args)
+
+	// Find memex binary path
+	memexBin, _ := os.Executable()
+	if memexBin == "" {
+		memexBin = "memex"
+	}
+
+	results := setup.RunInit(memexBin, *db, *editor, *dryRun, *force)
+
+	configured := 0
+	for _, r := range results {
+		switch r.Status {
+		case "configured":
+			fmt.Printf("  ✓ %s → %s\n", r.Editor, r.ConfigPath)
+			configured++
+		case "skipped":
+			fmt.Printf("  - %s (already configured, use --force to overwrite)\n", r.Editor)
+		case "not_installed":
+			fmt.Printf("  · %s (not installed)\n", r.Editor)
+		case "error":
+			fmt.Printf("  ✗ %s: %s\n", r.Editor, r.Error)
+		}
+	}
+
+	if configured > 0 {
+		fmt.Printf("\nConfigured %d editor(s). Restart them to activate memex MCP.\n", configured)
+	} else if !*dryRun {
+		fmt.Println("\nNo editors were configured. Install a supported editor or use --editor to specify one.")
+	}
+}
+
+func cmdHook(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: memex hook <post|compact|prompt> --kb <id>")
+		os.Exit(1)
+	}
+
+	event := args[0]
+	fs := flag.NewFlagSet("hook", flag.ExitOnError)
+	db := fs.String("db", "", "database path")
+	kb := fs.String("kb", "default", "knowledge base ID")
+	throttle := fs.Int64("throttle", 1, "process every Nth call (for post hook)")
+	fs.Parse(args[1:])
+
+	cfg, store := loadConfig(*db)
+	defer store.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	sched := buildScheduler(cfg, store, false)
+
+	embedReg := embedding.NewRegistry()
+	searcher := server.NewSearcher(store, cfg.DecayHalfLife, embedReg.NewProvider)
+
+	handler := hooks.NewHandler(sched, searcher)
+
+	var err error
+	switch event {
+	case "post":
+		err = handler.PostToolUse(ctx, *kb, *throttle)
+	case "compact":
+		err = handler.PreCompact(ctx, *kb)
+	case "prompt":
+		err = handler.UserPromptSubmit(ctx, *kb)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown hook event: %s (use post, compact, or prompt)\n", event)
+		os.Exit(1)
+	}
+
+	if err != nil {
+		slog.Error("hook failed", "event", event, "error", err)
+		os.Exit(1)
+	}
+}
 
 func cmdStats(args []string) {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)

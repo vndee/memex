@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -137,6 +138,60 @@ func (s *MCPServer) registerTools() {
 		Name:        "memex_job_retry",
 		Description: "Retry a failed ingestion job",
 	}, s.handleJobRetry)
+
+	// --- Feedback tools ---
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_feedback_record",
+		Description: "Record feedback or a correction on a memory. Used for closed-loop learning when the AI gets something wrong.",
+	}, s.handleFeedbackRecord)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_feedback_search",
+		Description: "Search past feedback and corrections to avoid repeating mistakes",
+	}, s.handleFeedbackSearch)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_feedback_stats",
+		Description: "Get aggregate feedback statistics for a knowledge base",
+	}, s.handleFeedbackStats)
+
+	// --- Parity tools (previously HTTP-only) ---
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_kb_get",
+		Description: "Get a specific knowledge base by ID",
+	}, s.handleKBGet)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_kb_delete",
+		Description: "Delete a knowledge base and all its data",
+	}, s.handleKBDelete)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_episode_list",
+		Description: "List episodes (stored memories) in a knowledge base",
+	}, s.handleEpisodeList)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_episode_get",
+		Description: "Get a specific episode by ID from a knowledge base",
+	}, s.handleEpisodeGet)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_entity_get",
+		Description: "Get a specific entity by ID from a knowledge base",
+	}, s.handleEntityGet)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_relation_get",
+		Description: "Get a specific relation by ID from a knowledge base",
+	}, s.handleRelationGet)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_community_list",
+		Description: "List communities (entity clusters) in a knowledge base",
+	}, s.handleCommunityList)
 }
 
 // --- Input/Output types ---
@@ -278,6 +333,101 @@ type jobRetryOutput struct {
 	Job *domain.IngestionJob `json:"job"`
 }
 
+// --- Feedback types ---
+
+type feedbackRecordInput struct {
+	KB         string `json:"kb" jsonschema:"knowledge base ID"`
+	Topic      string `json:"topic,omitempty" jsonschema:"feedback topic/category"`
+	Content    string `json:"content" jsonschema:"what went wrong or what the feedback is about"`
+	Correction string `json:"correction,omitempty" jsonschema:"the correct answer or fix"`
+}
+
+type feedbackRecordOutput struct {
+	Feedback *domain.Feedback `json:"feedback"`
+}
+
+type feedbackSearchInput struct {
+	KB    string `json:"kb" jsonschema:"knowledge base ID"`
+	Query string `json:"query" jsonschema:"search query for feedback"`
+	Topic string `json:"topic,omitempty" jsonschema:"filter by topic"`
+	Limit int    `json:"limit,omitempty" jsonschema:"max results. Default: 10"`
+}
+
+type feedbackSearchOutput struct {
+	Feedback []*domain.Feedback `json:"feedback"`
+}
+
+type feedbackStatsInput struct {
+	KB string `json:"kb" jsonschema:"knowledge base ID"`
+}
+
+type feedbackStatsOutput struct {
+	Stats *domain.FeedbackStats `json:"stats"`
+}
+
+// --- Parity types ---
+
+type kbGetInput struct {
+	KB string `json:"kb" jsonschema:"knowledge base ID"`
+}
+
+type kbGetOutput struct {
+	KB *domain.KnowledgeBase `json:"kb"`
+}
+
+type kbDeleteInput struct {
+	KB string `json:"kb" jsonschema:"knowledge base ID to delete"`
+}
+
+type kbDeleteOutput struct {
+	Message string `json:"message"`
+}
+
+type episodeListInput struct {
+	KB     string `json:"kb" jsonschema:"knowledge base ID"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"max results. Default: 50"`
+	Offset int    `json:"offset,omitempty" jsonschema:"pagination offset. Default: 0"`
+}
+
+type episodeListOutput struct {
+	Episodes []*domain.Episode `json:"episodes"`
+}
+
+type episodeGetInput struct {
+	KB string `json:"kb" jsonschema:"knowledge base ID"`
+	ID string `json:"id" jsonschema:"episode ID"`
+}
+
+type episodeGetOutput struct {
+	Episode *domain.Episode `json:"episode"`
+}
+
+type entityGetInput struct {
+	KB string `json:"kb" jsonschema:"knowledge base ID"`
+	ID string `json:"id" jsonschema:"entity ID"`
+}
+
+type entityGetOutput struct {
+	Entity *domain.Entity `json:"entity"`
+}
+
+type relationGetInput struct {
+	KB string `json:"kb" jsonschema:"knowledge base ID"`
+	ID string `json:"id" jsonschema:"relation ID"`
+}
+
+type relationGetOutput struct {
+	Relation *domain.Relation `json:"relation"`
+}
+
+type communityListInput struct {
+	KB string `json:"kb" jsonschema:"knowledge base ID"`
+}
+
+type communityListOutput struct {
+	Communities []*domain.Community `json:"communities"`
+}
+
 // --- Tool handlers ---
 
 func (s *MCPServer) handleKBCreate(ctx context.Context, req *mcp.CallToolRequest, input kbCreateInput) (*mcp.CallToolResult, kbCreateOutput, error) {
@@ -372,12 +522,13 @@ func (s *MCPServer) handleSearch(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 
 	// Build human-readable text for the LLM.
-	text := fmt.Sprintf("Found %d results:\n", len(results))
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Found %d results:\n", len(results))
 	for i, r := range results {
-		text += fmt.Sprintf("%d. [%s] %s (score: %.4f)\n", i+1, r.Type, r.Content, r.Score)
+		fmt.Fprintf(&sb, "%d. [%s] %s (score: %.4f)\n", i+1, r.Type, truncateContent(r.Content, 200), r.Score)
 	}
 
-	return textResult(text), searchOutput{Results: results}, nil
+	return textResult(sb.String()), searchOutput{Results: results}, nil
 }
 
 func (s *MCPServer) handleEntities(ctx context.Context, req *mcp.CallToolRequest, input entitiesInput) (*mcp.CallToolResult, entitiesOutput, error) {
@@ -580,6 +731,178 @@ func (s *MCPServer) handleJobRetry(ctx context.Context, req *mcp.CallToolRequest
 	return textResult(msg), jobRetryOutput{Job: job}, nil
 }
 
+// --- Feedback handlers ---
+
+func (s *MCPServer) handleFeedbackRecord(ctx context.Context, req *mcp.CallToolRequest, input feedbackRecordInput) (*mcp.CallToolResult, feedbackRecordOutput, error) {
+	if input.KB == "" {
+		return nil, feedbackRecordOutput{}, fmt.Errorf("kb is required")
+	}
+	if input.Content == "" {
+		return nil, feedbackRecordOutput{}, fmt.Errorf("content is required")
+	}
+
+	fb := domain.NewFeedback(input.KB, input.Topic, input.Content, input.Correction, "mcp")
+
+	if err := s.store.CreateFeedback(ctx, fb); err != nil {
+		return nil, feedbackRecordOutput{}, fmt.Errorf("record feedback: %w", err)
+	}
+
+	msg := fmt.Sprintf("Recorded feedback %s in KB %s", fb.ID, input.KB)
+	if input.Topic != "" {
+		msg += fmt.Sprintf(" (topic: %s)", input.Topic)
+	}
+	return textResult(msg), feedbackRecordOutput{Feedback: fb}, nil
+}
+
+func (s *MCPServer) handleFeedbackSearch(ctx context.Context, req *mcp.CallToolRequest, input feedbackSearchInput) (*mcp.CallToolResult, feedbackSearchOutput, error) {
+	if input.KB == "" {
+		return nil, feedbackSearchOutput{}, fmt.Errorf("kb is required")
+	}
+
+	limit := clampLimit(input.Limit)
+
+	var feedback []*domain.Feedback
+	var err error
+
+	if input.Query != "" {
+		feedback, err = s.store.SearchFeedback(ctx, input.KB, input.Query, limit)
+	} else {
+		feedback, err = s.store.ListFeedbackByTopic(ctx, input.KB, input.Topic, limit)
+	}
+	if err != nil {
+		return nil, feedbackSearchOutput{}, fmt.Errorf("search feedback: %w", err)
+	}
+
+	if len(feedback) == 0 {
+		return textResult("No feedback found."), feedbackSearchOutput{Feedback: feedback}, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Found %d feedback entries:\n", len(feedback))
+	for i, fb := range feedback {
+		fmt.Fprintf(&sb, "%d. [%s] %s", i+1, fb.Topic, fb.Content)
+		if fb.Correction != "" {
+			fmt.Fprintf(&sb, " → %s", fb.Correction)
+		}
+		sb.WriteByte('\n')
+	}
+	return textResult(sb.String()), feedbackSearchOutput{Feedback: feedback}, nil
+}
+
+func (s *MCPServer) handleFeedbackStats(ctx context.Context, req *mcp.CallToolRequest, input feedbackStatsInput) (*mcp.CallToolResult, feedbackStatsOutput, error) {
+	if input.KB == "" {
+		return nil, feedbackStatsOutput{}, fmt.Errorf("kb is required")
+	}
+
+	stats, err := s.store.GetFeedbackStats(ctx, input.KB)
+	if err != nil {
+		return nil, feedbackStatsOutput{}, fmt.Errorf("feedback stats: %w", err)
+	}
+
+	b, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		return nil, feedbackStatsOutput{}, fmt.Errorf("marshal feedback stats: %w", err)
+	}
+	return textResult(string(b)), feedbackStatsOutput{Stats: stats}, nil
+}
+
+// --- Parity handlers ---
+
+func (s *MCPServer) handleKBGet(ctx context.Context, req *mcp.CallToolRequest, input kbGetInput) (*mcp.CallToolResult, kbGetOutput, error) {
+	if input.KB == "" {
+		return nil, kbGetOutput{}, fmt.Errorf("kb is required")
+	}
+
+	kb, err := s.store.GetKB(ctx, input.KB)
+	if err != nil {
+		return nil, kbGetOutput{}, fmt.Errorf("get KB %q: %w", input.KB, err)
+	}
+
+	sanitizeKB(kb)
+	return nil, kbGetOutput{KB: kb}, nil
+}
+
+func (s *MCPServer) handleKBDelete(ctx context.Context, req *mcp.CallToolRequest, input kbDeleteInput) (*mcp.CallToolResult, kbDeleteOutput, error) {
+	if input.KB == "" {
+		return nil, kbDeleteOutput{}, fmt.Errorf("kb is required")
+	}
+
+	if err := s.store.DeleteKB(ctx, input.KB); err != nil {
+		return nil, kbDeleteOutput{}, fmt.Errorf("delete KB %q: %w", input.KB, err)
+	}
+
+	msg := fmt.Sprintf("Deleted knowledge base %s", input.KB)
+	return textResult(msg), kbDeleteOutput{Message: msg}, nil
+}
+
+func (s *MCPServer) handleEpisodeList(ctx context.Context, req *mcp.CallToolRequest, input episodeListInput) (*mcp.CallToolResult, episodeListOutput, error) {
+	if input.KB == "" {
+		return nil, episodeListOutput{}, fmt.Errorf("kb is required")
+	}
+
+	limit := clampLimit(input.Limit)
+	episodes, err := s.store.ListEpisodes(ctx, input.KB, limit, input.Offset)
+	if err != nil {
+		return nil, episodeListOutput{}, fmt.Errorf("list episodes in KB %q: %w", input.KB, err)
+	}
+
+	return nil, episodeListOutput{Episodes: episodes}, nil
+}
+
+func (s *MCPServer) handleEpisodeGet(ctx context.Context, req *mcp.CallToolRequest, input episodeGetInput) (*mcp.CallToolResult, episodeGetOutput, error) {
+	if input.KB == "" || input.ID == "" {
+		return nil, episodeGetOutput{}, fmt.Errorf("kb and id are required")
+	}
+
+	ep, err := s.store.GetEpisode(ctx, input.KB, input.ID)
+	if err != nil {
+		return nil, episodeGetOutput{}, fmt.Errorf("get episode %q: %w", input.ID, err)
+	}
+
+	return nil, episodeGetOutput{Episode: ep}, nil
+}
+
+func (s *MCPServer) handleEntityGet(ctx context.Context, req *mcp.CallToolRequest, input entityGetInput) (*mcp.CallToolResult, entityGetOutput, error) {
+	if input.KB == "" || input.ID == "" {
+		return nil, entityGetOutput{}, fmt.Errorf("kb and id are required")
+	}
+
+	entity, err := s.store.GetEntity(ctx, input.KB, input.ID)
+	if err != nil {
+		return nil, entityGetOutput{}, fmt.Errorf("get entity %q: %w", input.ID, err)
+	}
+
+	entity.Embedding = nil
+	return nil, entityGetOutput{Entity: entity}, nil
+}
+
+func (s *MCPServer) handleRelationGet(ctx context.Context, req *mcp.CallToolRequest, input relationGetInput) (*mcp.CallToolResult, relationGetOutput, error) {
+	if input.KB == "" || input.ID == "" {
+		return nil, relationGetOutput{}, fmt.Errorf("kb and id are required")
+	}
+
+	rel, err := s.store.GetRelation(ctx, input.KB, input.ID)
+	if err != nil {
+		return nil, relationGetOutput{}, fmt.Errorf("get relation %q: %w", input.ID, err)
+	}
+
+	rel.Embedding = nil
+	return nil, relationGetOutput{Relation: rel}, nil
+}
+
+func (s *MCPServer) handleCommunityList(ctx context.Context, req *mcp.CallToolRequest, input communityListInput) (*mcp.CallToolResult, communityListOutput, error) {
+	if input.KB == "" {
+		return nil, communityListOutput{}, fmt.Errorf("kb is required")
+	}
+
+	communities, err := s.store.ListCommunities(ctx, input.KB)
+	if err != nil {
+		return nil, communityListOutput{}, fmt.Errorf("list communities in KB %q: %w", input.KB, err)
+	}
+
+	return nil, communityListOutput{Communities: communities}, nil
+}
+
 // --- Helpers ---
 
 // textResult creates a CallToolResult with a single text content.
@@ -593,6 +916,15 @@ func textResult(text string) *mcp.CallToolResult {
 func sanitizeKB(kb *domain.KnowledgeBase) {
 	kb.EmbedConfig.APIKey = ""
 	kb.LLMConfig.APIKey = ""
+}
+
+// truncateContent truncates text for human-readable MCP text responses.
+func truncateContent(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // clampLimit applies default and max bounds to a user-provided limit.

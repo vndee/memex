@@ -3,6 +3,8 @@ package domain
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 )
 
 // Provider name constants used in EmbedConfig.Provider and LLMConfig.Provider.
@@ -144,6 +146,38 @@ type MemoryStats struct {
 	DBSizeBytes      int64     `json:"db_size_bytes"`
 	LastIngestion    time.Time `json:"last_ingestion,omitempty"`
 	LastDecayRun     time.Time `json:"last_decay_run,omitempty"`
+}
+
+// Feedback records a correction or feedback on a memory item for closed-loop learning.
+type Feedback struct {
+	ID         string            `json:"id"`
+	KBID       string            `json:"kb_id"`
+	Topic      string            `json:"topic"`
+	Content    string            `json:"content"`               // what went wrong or what feedback is about
+	Correction string            `json:"correction,omitempty"`   // the correct answer or fix
+	Source     string            `json:"source"`                 // "mcp", "api", "cli"
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
+}
+
+// NewFeedback constructs a Feedback with a generated ID and current timestamp.
+func NewFeedback(kbID, topic, content, correction, source string) *Feedback {
+	return &Feedback{
+		ID:         ulid.Make().String(),
+		KBID:       kbID,
+		Topic:      topic,
+		Content:    content,
+		Correction: correction,
+		Source:     source,
+		CreatedAt:  time.Now().UTC(),
+	}
+}
+
+// FeedbackStats holds aggregate feedback metrics for a KB.
+type FeedbackStats struct {
+	KBID         string         `json:"kb_id"`
+	TotalCount   int            `json:"total_count"`
+	TopicCounts  map[string]int `json:"topic_counts"`
 }
 
 // IngestionJob tracks an ingestion request through its lifecycle.

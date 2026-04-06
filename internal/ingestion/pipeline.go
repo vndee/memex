@@ -25,11 +25,13 @@ type ExtractorFactory interface {
 	NewProvider(cfg domain.LLMConfig) (extraction.Provider, error)
 }
 
-// Pipeline orchestrates: text -> episode -> LLM extraction -> entity resolution -> embeddings -> store.
+// Pipeline orchestrates: text -> episode -> extraction -> entity resolution -> embeddings -> store.
+// Rule-based extraction is attempted first; LLM extraction is used as fallback.
 type Pipeline struct {
-	store       storage.Store
-	embedFact   EmbedderFactory
-	extractFact ExtractorFactory
+	store         storage.Store
+	embedFact     EmbedderFactory
+	extractFact   ExtractorFactory
+	ruleExtractor *extraction.RuleProvider
 
 	mu           sync.RWMutex
 	embedCache   map[cacheKey]embedding.Provider
@@ -58,11 +60,12 @@ type pendingRelation struct {
 // NewPipeline creates an ingestion pipeline with the given registries.
 func NewPipeline(store storage.Store, embedFact EmbedderFactory, extractFact ExtractorFactory) *Pipeline {
 	return &Pipeline{
-		store:        store,
-		embedFact:    embedFact,
-		extractFact:  extractFact,
-		embedCache:   make(map[cacheKey]embedding.Provider),
-		extractCache: make(map[cacheKey]extraction.Provider),
+		store:         store,
+		embedFact:     embedFact,
+		extractFact:   extractFact,
+		ruleExtractor: extraction.NewRuleProvider(),
+		embedCache:    make(map[cacheKey]embedding.Provider),
+		extractCache:  make(map[cacheKey]extraction.Provider),
 	}
 }
 
@@ -121,18 +124,35 @@ func (p *Pipeline) Ingest(ctx context.Context, kbID, text string, opts IngestOpt
 		}
 	}()
 
-	extractKey := cacheKey{kbID: kbID, provider: kb.LLMConfig.Provider, model: kb.LLMConfig.Model, baseURL: kb.LLMConfig.BaseURL, apiKey: kb.LLMConfig.APIKey}
-	extractor, err := getOrCreate(&p.mu, p.extractCache, extractKey, func() (extraction.Provider, error) {
-		return p.extractFact.NewProvider(kb.LLMConfig)
-	})
-	if err != nil {
-		return result, fmt.Errorf("create extractor: %w", err)
+	// Try rule-based extraction first (zero LLM cost).
+	extracted, ruleErr := p.ruleExtractor.Extract(ctx, text)
+	usedLLM := false
+	var llmExtractor extraction.Provider
+	if ruleErr != nil {
+		slog.Warn("rule extraction failed, falling back to LLM", "error", ruleErr)
 	}
+	if ruleErr != nil || len(extracted.Entities) == 0 {
+		// Fall back to LLM extraction.
+		usedLLM = true
+		extractKey := cacheKey{kbID: kbID, provider: kb.LLMConfig.Provider, model: kb.LLMConfig.Model, baseURL: kb.LLMConfig.BaseURL, apiKey: kb.LLMConfig.APIKey}
+		var err error
+		llmExtractor, err = getOrCreate(&p.mu, p.extractCache, extractKey, func() (extraction.Provider, error) {
+			return p.extractFact.NewProvider(kb.LLMConfig)
+		})
+		if err != nil {
+			return result, fmt.Errorf("create extractor: %w", err)
+		}
 
-	extracted, err := extractor.Extract(ctx, text)
-	if err != nil {
-		return result, fmt.Errorf("extract: %w", err)
+		extracted, err = llmExtractor.Extract(ctx, text)
+		if err != nil {
+			return result, fmt.Errorf("extract: %w", err)
+		}
 	}
+	method := "rule"
+	if usedLLM {
+		method = "llm"
+	}
+	slog.Info("extraction complete", "method", method, "entities", len(extracted.Entities), "relations", len(extracted.Relations))
 
 	allEntities, err := p.store.ListEntityNames(ctx, kbID)
 	if err != nil {
@@ -140,7 +160,8 @@ func (p *Pipeline) Ingest(ctx context.Context, kbID, text string, opts IngestOpt
 		allEntities = nil
 	}
 
-	resolver := extraction.NewResolver(extractor)
+	// For rule-based extraction, resolve without LLM; for LLM, reuse the extractor.
+	resolver := extraction.NewResolver(llmExtractor)
 	knownEntities := append([]*domain.Entity(nil), allEntities...)
 	entityMap := make(map[string]string)
 	pendingEntities := make([]*pendingEntity, 0, len(extracted.Entities))

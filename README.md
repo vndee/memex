@@ -10,6 +10,11 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 
 ## Features
 
+- **Zero-LLM Extraction** - Rule-based pattern matching extracts entities from bash errors, git commits, config changes, and decisions at zero token cost. Falls back to LLM for rich text.
+- **Hook-Based Auto-Capture** - Passive learning via editor hooks (PostToolUse, PreCompact, UserPromptSubmit). No explicit `store` calls needed.
+- **Feedback/Correction Tracking** - Closed-loop learning: record when AI gets things wrong, search past corrections to avoid repeating mistakes.
+- **One-Command Setup** - `memex init` auto-configures Claude Code, Cursor, Windsurf, VS Code, and Zed in one command.
+- **24 MCP Tools** - Complete MCP API covering memory storage, search, entities, relations, episodes, communities, feedback, lifecycle, and jobs.
 - **Local First** - Works out of the box with Ollama for both embeddings and LLM — your data never leaves your machine
 - **Knowledge Graph** - Entities, relations, and episodes extracted from natural language via LLM
 - **Hybrid Search** - BM25 full-text + vector similarity + graph traversal, fused with Reciprocal Rank Fusion
@@ -17,11 +22,10 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 - **Temporal Awareness** - Bitemporal relations (valid time + transaction time), memory decay, automatic pruning
 - **Multi-Provider** - Ollama (local), OpenAI, Google Gemini, Vertex AI, Azure, Groq for both embeddings and LLM
 - **Per-KB Isolation** - Each knowledge base has its own embedding model, LLM, and API keys
-- **MCP Server** - Model Context Protocol support for Claude, Cursor, and other MCP-compatible clients
 - **REST API** - Full HTTP API with Chi router (20+ endpoints)
 - **Terminal UI** - Interactive 3-pane TUI with graph explorer, built with Bubble Tea
-- **Entity Resolution** - LLM-powered deduplication with configurable similarity threshold
-- **Memory Lifecycle** - Background decay, smart pruning (deduplicates before deleting), entity consolidation with edge merging
+- **3-Tier Entity Resolution** - Exact match, fuzzy (Jaro-Winkler), and LLM-powered deduplication
+- **Memory Lifecycle** - Ebbinghaus-inspired decay, smart pruning (deduplicates before deleting), entity consolidation with edge merging
 - **Async Ingestion** - Background job queue with retries, persistence across restarts
 - **Single Binary** - Compiles to one static binary with embedded SQLite, no external dependencies
 
@@ -30,6 +34,9 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 ```bash
 # Build
 go build -o memex ./cmd/memex/
+
+# Auto-configure your AI editors (Claude Code, Cursor, Windsurf, VS Code, Zed)
+./memex init
 
 # Create a knowledge base with local Ollama (no API keys needed)
 # Requires: ollama pull nomic-embed-text && ollama pull llama3.2
@@ -41,7 +48,7 @@ go build -o memex ./cmd/memex/
   --llm gemini/gemini-2.5-flash \
   --name "My Project"
 
-# Store memories
+# Store memories (rule-based extraction for errors/commits, LLM for rich text)
 ./memex store "Alice is a senior engineer working on Project Atlas" --kb my-project
 ./memex store "Project Atlas uses Kafka and targets Q3 completion" --kb my-project
 
@@ -64,11 +71,11 @@ go build -o memex ./cmd/memex/
 Text Input
     |
     v
-+-----------+     +-------------+     +-----------+     +-------------+
-| Ingestion | --> | LLM Extract | --> | Entity    | --> | Relation    |
-| Queue     |     | (entities,  |     | Resolution|     | Upsert &    |
-|           |     |  relations) |     | & Merge   |     | Strengthen  |
-+-----------+     +-------------+     +-----------+     +-------------+
++-----------+     +-------------+     +-------------+     +-----------+     +-------------+
+| Ingestion | --> | Rule-Based  | -?-> | LLM Extract | --> | Entity    | --> | Relation    |
+| Queue     |     | Extract     |     | (fallback)  |     | Resolution|     | Upsert &    |
+|           |     | (zero cost) |     |             |     | & Merge   |     | Strengthen  |
++-----------+     +-------------+     +-------------+     +-----------+     +-------------+
                                                               |
                                                               v
                                                       +---------------+
@@ -127,6 +134,8 @@ During lifecycle management:
 
 ```
 memex version                              Print version
+memex init [--editor <name>] [--dry-run]   Auto-configure AI editors
+memex hook <post|compact|prompt> [flags]   Process hook events from editors
 memex kb create <id> [flags]               Create a knowledge base
 memex kb list [flags]                      List knowledge bases
 memex kb delete <id> [flags]               Delete a knowledge base
@@ -151,7 +160,14 @@ memex tui [flags]                          Launch interactive terminal UI
 
 ## MCP Integration
 
-Add to your Claude Desktop or Cursor MCP config:
+The fastest way to set up is with `memex init`:
+
+```bash
+./memex init           # Auto-detects and configures all installed editors
+./memex init --dry-run # Preview changes without writing
+```
+
+Or manually add to your editor's MCP config:
 
 ```json
 {
@@ -164,24 +180,59 @@ Add to your Claude Desktop or Cursor MCP config:
 }
 ```
 
-Available MCP tools:
+### MCP Tools (24)
 
+**Memory & Search**
 | Tool | Description |
 |------|-------------|
-| `memex_store` | Store a memory into a knowledge base |
-| `memex_search` | Hybrid search across the knowledge graph |
-| `memex_list_kbs` | List all knowledge bases |
-| `memex_create_kb` | Create a new knowledge base |
-| `memex_delete_kb` | Delete a knowledge base |
-| `memex_get_entity` | Get entity details by ID |
-| `memex_get_relations` | Get relations for an entity |
-| `memex_get_stats` | Get knowledge base statistics |
-| `memex_lifecycle_decay` | Run memory decay on a KB |
+| `memex_store` | Store a memory (rule-based or LLM extraction) |
+| `memex_search` | Hybrid search (BM25 + vector + graph) |
+
+**Knowledge Bases**
+| Tool | Description |
+|------|-------------|
+| `memex_kb_create` | Create a new knowledge base |
+| `memex_kb_list` | List all knowledge bases |
+| `memex_kb_get` | Get a specific knowledge base |
+| `memex_kb_delete` | Delete a knowledge base |
+
+**Entities & Relations**
+| Tool | Description |
+|------|-------------|
+| `memex_entities` | List or search entities |
+| `memex_entity_get` | Get entity by ID |
+| `memex_relations` | Get relations for an entity |
+| `memex_relation_get` | Get relation by ID |
+| `memex_delete` | Delete entity, relation, or episode |
+
+**Episodes & Communities**
+| Tool | Description |
+|------|-------------|
+| `memex_episode_list` | List stored episodes |
+| `memex_episode_get` | Get episode by ID |
+| `memex_community_list` | List entity communities |
+
+**Feedback (Closed-Loop Learning)**
+| Tool | Description |
+|------|-------------|
+| `memex_feedback_record` | Record a correction when AI gets something wrong |
+| `memex_feedback_search` | Search past corrections to avoid repeating mistakes |
+| `memex_feedback_stats` | Get feedback statistics by topic |
+
+**Lifecycle & Stats**
+| Tool | Description |
+|------|-------------|
+| `memex_stats` | Get knowledge base statistics |
+| `memex_lifecycle_decay` | Run memory decay |
 | `memex_lifecycle_prune` | Prune weak memories |
 | `memex_lifecycle_consolidate` | Merge duplicate entities |
-| `memex_job_list` | List ingestion jobs (filterable by KB and status) |
-| `memex_job_get` | Get ingestion job details by ID |
-| `memex_job_retry` | Retry a failed ingestion job |
+
+**Jobs**
+| Tool | Description |
+|------|-------------|
+| `memex_job_list` | List ingestion jobs |
+| `memex_job_get` | Get job details |
+| `memex_job_retry` | Retry a failed job |
 
 ## HTTP API
 
@@ -205,10 +256,34 @@ Start with `memex serve --host 127.0.0.1 --port 8080`.
 | GET | `/api/v1/kb/{id}/relations` | List relations |
 | GET | `/api/v1/kb/{id}/episodes` | List episodes |
 | GET | `/api/v1/kb/{id}/communities` | List communities |
+| POST | `/api/v1/kb/{id}/feedback` | Record feedback |
+| GET | `/api/v1/kb/{id}/feedback` | List/search feedback |
+| GET | `/api/v1/kb/{id}/feedback/stats` | Feedback statistics |
 | GET | `/api/v1/kb/{id}/stats` | Get stats |
 | POST | `/api/v1/kb/{id}/decay` | Run decay |
 | POST | `/api/v1/kb/{id}/prune` | Run prune |
 | POST | `/api/v1/kb/{id}/consolidate` | Run consolidation |
+
+## Hook-Based Auto-Capture
+
+Memex can passively learn from your AI editor sessions via hooks. When configured, it automatically:
+
+- **PostToolUse**: Extracts entities from tool outputs (bash errors, git commits, etc.) using zero-cost rule-based extraction
+- **PreCompact**: Saves important context before the editor compresses its conversation history
+- **UserPromptSubmit**: Injects relevant memories into each new prompt
+
+```bash
+# Process tool output (reads from stdin)
+echo "error: permission denied" | ./memex hook post --kb my-project
+
+# Save transcript before context compression
+cat transcript.txt | ./memex hook compact --kb my-project
+
+# Inject relevant memories for a prompt
+echo "How do I fix the auth bug?" | ./memex hook prompt --kb my-project
+```
+
+Hooks are automatically configured when you run `memex init` for supported editors.
 
 ## Terminal UI
 

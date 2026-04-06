@@ -91,3 +91,15 @@ func (s *SQLiteStore) DeleteEpisode(ctx context.Context, kbID, id string) error 
 	}
 	return nil
 }
+
+// CountEpisodesBySourcePrefix counts episodes whose source starts with the given prefix.
+func (s *SQLiteStore) CountEpisodesBySourcePrefix(ctx context.Context, kbID, prefix string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM episodes WHERE kb_id = ? AND source LIKE ?`,
+		kbID, prefix+"%").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count episodes by source prefix: %w", err)
+	}
+	return count, nil
+}

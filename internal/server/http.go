@@ -130,6 +130,11 @@ func (s *HTTPServer) buildRouter() chi.Router {
 				r.Get("/relations", s.handleRelationList)
 				r.Get("/relations/{id}", s.handleRelationGet)
 
+				// Feedback
+				r.Post("/feedback", s.handleFeedbackCreate)
+				r.Get("/feedback", s.handleFeedbackList)
+				r.Get("/feedback/stats", s.handleFeedbackStatsHTTP)
+
 				// Search
 				r.Get("/search", s.handleSearch)
 
@@ -556,6 +561,75 @@ func (s *HTTPServer) handleLifecycleConsolidate(w http.ResponseWriter, r *http.R
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// Feedback handlers
+
+type feedbackHTTPCreateRequest struct {
+	Topic      string `json:"topic"`
+	Content    string `json:"content"`
+	Correction string `json:"correction,omitempty"`
+}
+
+func (s *HTTPServer) handleFeedbackCreate(w http.ResponseWriter, r *http.Request) {
+	kbID := chi.URLParam(r, "kb_id")
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxContentBytes)
+	var req feedbackHTTPCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid or too-large JSON body")
+		return
+	}
+	if req.Content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	fb := domain.NewFeedback(kbID, req.Topic, req.Content, req.Correction, "api")
+
+	if err := s.store.CreateFeedback(r.Context(), fb); err != nil {
+		slog.Error("create feedback failed", "kb_id", kbID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create feedback")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, fb)
+}
+
+func (s *HTTPServer) handleFeedbackList(w http.ResponseWriter, r *http.Request) {
+	kbID := chi.URLParam(r, "kb_id")
+	query := r.URL.Query().Get("q")
+	topic := r.URL.Query().Get("topic")
+	limit := parseIntParam(r, "limit", 50, maxListLimit)
+
+	var feedback []*domain.Feedback
+	var err error
+
+	if query != "" {
+		feedback, err = s.store.SearchFeedback(r.Context(), kbID, query, limit)
+	} else {
+		feedback, err = s.store.ListFeedbackByTopic(r.Context(), kbID, topic, limit)
+	}
+	if err != nil {
+		slog.Error("list feedback failed", "kb_id", kbID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list feedback")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"feedback": feedback})
+}
+
+func (s *HTTPServer) handleFeedbackStatsHTTP(w http.ResponseWriter, r *http.Request) {
+	kbID := chi.URLParam(r, "kb_id")
+
+	stats, err := s.store.GetFeedbackStats(r.Context(), kbID)
+	if err != nil {
+		slog.Error("feedback stats failed", "kb_id", kbID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to get feedback stats")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // Job handlers
