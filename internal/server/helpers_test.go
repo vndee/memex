@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -17,10 +18,14 @@ func init() {
 
 type countingServerStore struct {
 	storage.Store
-	getEntityCalls            int
-	getEntitiesByIDsCalls     int
-	getRelationCalls          int
-	getRelationsByIDsCalls    int
+	getEntityCalls                 int
+	getEntitiesByIDsCalls          int
+	getRelationCalls               int
+	getRelationsByIDsCalls         int
+	getSubgraphEntitiesByIDsCalls  int
+	getSubgraphRelationsByIDsCalls int
+	failSubgraphEntitiesByIDs      bool
+	failSubgraphRelationsByIDs     bool
 }
 
 func (s *countingServerStore) GetEntity(ctx context.Context, kbID, id string) (*domain.Entity, error) {
@@ -43,7 +48,35 @@ func (s *countingServerStore) GetRelationsByIDs(ctx context.Context, kbID string
 	return s.Store.GetRelationsByIDs(ctx, kbID, ids)
 }
 
-func TestHydrateSubgraph_UsesBatchLookups(t *testing.T) {
+func (s *countingServerStore) GetSubgraphEntitiesByIDs(ctx context.Context, kbID string, ids []string) (map[string]storage.SubgraphEntityMetadata, error) {
+	s.getSubgraphEntitiesByIDsCalls++
+	if s.failSubgraphEntitiesByIDs {
+		return nil, errors.New("entity hydration failed")
+	}
+	loader, ok := s.Store.(interface {
+		GetSubgraphEntitiesByIDs(context.Context, string, []string) (map[string]storage.SubgraphEntityMetadata, error)
+	})
+	if !ok {
+		return nil, errors.New("subgraph entity loader not supported")
+	}
+	return loader.GetSubgraphEntitiesByIDs(ctx, kbID, ids)
+}
+
+func (s *countingServerStore) GetSubgraphRelationsByIDs(ctx context.Context, kbID string, ids []string) (map[string]storage.SubgraphRelationMetadata, error) {
+	s.getSubgraphRelationsByIDsCalls++
+	if s.failSubgraphRelationsByIDs {
+		return nil, errors.New("relation hydration failed")
+	}
+	loader, ok := s.Store.(interface {
+		GetSubgraphRelationsByIDs(context.Context, string, []string) (map[string]storage.SubgraphRelationMetadata, error)
+	})
+	if !ok {
+		return nil, errors.New("subgraph relation loader not supported")
+	}
+	return loader.GetSubgraphRelationsByIDs(ctx, kbID, ids)
+}
+
+func TestHydrateSubgraph_UsesLightweightBatchLookups(t *testing.T) {
 	sqliteStore, err := storage.NewSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -116,16 +149,130 @@ func TestHydrateSubgraph_UsesBatchLookups(t *testing.T) {
 	if edgesByID["missing-rel"].SourceID != "e2" || edgesByID["missing-rel"].TargetID != "missing" || edgesByID["missing-rel"].Type != "mentions" {
 		t.Fatalf("expected fallback edge for missing-rel, got %+v", edgesByID["missing-rel"])
 	}
-	if store.getEntitiesByIDsCalls != 1 {
-		t.Fatalf("GetEntitiesByIDs calls = %d, want 1", store.getEntitiesByIDsCalls)
+	if store.getEntitiesByIDsCalls != 0 {
+		t.Fatalf("GetEntitiesByIDs calls = %d, want 0", store.getEntitiesByIDsCalls)
 	}
-	if store.getRelationsByIDsCalls != 1 {
-		t.Fatalf("GetRelationsByIDs calls = %d, want 1", store.getRelationsByIDsCalls)
+	if store.getRelationsByIDsCalls != 0 {
+		t.Fatalf("GetRelationsByIDs calls = %d, want 0", store.getRelationsByIDsCalls)
+	}
+	if store.getSubgraphEntitiesByIDsCalls != 1 {
+		t.Fatalf("GetSubgraphEntitiesByIDs calls = %d, want 1", store.getSubgraphEntitiesByIDsCalls)
+	}
+	if store.getSubgraphRelationsByIDsCalls != 1 {
+		t.Fatalf("GetSubgraphRelationsByIDs calls = %d, want 1", store.getSubgraphRelationsByIDsCalls)
 	}
 	if store.getEntityCalls != 0 {
 		t.Fatalf("GetEntity calls = %d, want 0", store.getEntityCalls)
 	}
 	if store.getRelationCalls != 0 {
 		t.Fatalf("GetRelation calls = %d, want 0", store.getRelationCalls)
+	}
+}
+
+func TestHydrateSubgraph_FallsBackWhenBatchHydrationFails(t *testing.T) {
+	sqliteStore, err := storage.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+
+	now := time.Now().UTC()
+	if err := sqliteStore.CreateKB(context.Background(), &domain.KnowledgeBase{
+		ID: "kb1", Name: "KB 1",
+		EmbedConfig: domain.EmbedConfig{Provider: "ollama", Model: "nomic-embed-text"},
+		LLMConfig:   domain.LLMConfig{Provider: "ollama", Model: "llama3.2"},
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqliteStore.CreateEntity(context.Background(), &domain.Entity{
+		ID:        "e1",
+		KBID:      "kb1",
+		Name:      "Alice",
+		Type:      "person",
+		Summary:   "Engineer",
+		Embedding: []float32{1, 2, 3},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqliteStore.CreateEntity(context.Background(), &domain.Entity{
+		ID:        "missing",
+		KBID:      "kb1",
+		Name:      "Unhydrated",
+		Type:      "person",
+		Summary:   "Fallback target",
+		Embedding: []float32{4, 5, 6},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqliteStore.CreateRelation(context.Background(), &domain.Relation{
+		ID:        "r1",
+		KBID:      "kb1",
+		SourceID:  "e1",
+		TargetID:  "missing",
+		Type:      "knows",
+		Summary:   "Alice knows someone",
+		Weight:    1,
+		Embedding: []float32{1, 2, 3},
+		ValidAt:   now,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &countingServerStore{
+		Store:                      sqliteStore,
+		failSubgraphEntitiesByIDs:  true,
+		failSubgraphRelationsByIDs: true,
+	}
+	subgraph := graph.SubgraphResult{
+		Nodes: map[string]int{"e1": 0, "missing": 1},
+		Edges: []graph.SubgraphEdge{
+			{RelID: "r1", SourceID: "e1", TargetID: "missing", Type: "knows", Weight: 1},
+		},
+	}
+
+	hydrated, err := HydrateSubgraph(context.Background(), store, "kb1", subgraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hydrated.Nodes) != 2 {
+		t.Fatalf("got %d nodes, want 2", len(hydrated.Nodes))
+	}
+	if len(hydrated.Edges) != 1 {
+		t.Fatalf("got %d edges, want 1", len(hydrated.Edges))
+	}
+
+	nodesByID := make(map[string]domain.SubgraphNode, len(hydrated.Nodes))
+	for _, n := range hydrated.Nodes {
+		nodesByID[n.ID] = n
+	}
+	if nodesByID["e1"].Name != "" || nodesByID["e1"].Summary != "" {
+		t.Fatalf("expected raw fallback node for e1, got %+v", nodesByID["e1"])
+	}
+	if nodesByID["e1"].Distance != 0 || nodesByID["missing"].Distance != 1 {
+		t.Fatalf("expected fallback distances to be preserved, got %+v", hydrated.Nodes)
+	}
+
+	edge := hydrated.Edges[0]
+	if edge.ID != "r1" || edge.SourceID != "e1" || edge.TargetID != "missing" || edge.Type != "knows" || edge.Weight != 1 {
+		t.Fatalf("expected raw fallback edge, got %+v", edge)
+	}
+	if !edge.ValidAt.IsZero() || edge.InvalidAt != nil {
+		t.Fatalf("expected temporal metadata to remain empty on fallback, got %+v", edge)
+	}
+
+	if store.getSubgraphEntitiesByIDsCalls != 1 {
+		t.Fatalf("GetSubgraphEntitiesByIDs calls = %d, want 1", store.getSubgraphEntitiesByIDsCalls)
+	}
+	if store.getSubgraphRelationsByIDsCalls != 1 {
+		t.Fatalf("GetSubgraphRelationsByIDs calls = %d, want 1", store.getSubgraphRelationsByIDsCalls)
+	}
+	if store.getEntityCalls != 0 || store.getRelationCalls != 0 {
+		t.Fatalf("expected no per-item fallback queries, got GetEntity=%d GetRelation=%d", store.getEntityCalls, store.getRelationCalls)
 	}
 }
