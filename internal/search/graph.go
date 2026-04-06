@@ -44,7 +44,7 @@ func searchGraph(
 
 	switch opts.GraphScorer {
 	case GraphScorerPageRank:
-		return searchGraphPPR(ctx, store, g, kbID, seeds, seedSet, limit)
+		return searchGraphPPR(ctx, store, g, kbID, seeds, seedSet, opts, limit)
 	case GraphScorerWeighted:
 		return searchGraphWeighted(ctx, store, g, kbID, seeds, seedSet, opts, limit)
 	default:
@@ -110,9 +110,13 @@ func searchGraphPPR(
 	kbID string,
 	seeds []string,
 	seedSet map[string]struct{},
+	opts Options,
 	limit int,
 ) ([]*domain.SearchResult, error) {
-	ranks := g.PersonalizedPageRank(seeds, pprAlpha, pprMaxIter, pprEpsilon)
+	ranks, err := g.PersonalizedPageRank(ctx, seeds, opts.MaxHops, pprAlpha, pprMaxIter, pprEpsilon)
+	if err != nil {
+		return nil, fmt.Errorf("personalized pagerank: %w", err)
+	}
 
 	type entry struct {
 		id   string

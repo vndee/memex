@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"math"
 	"sync"
 	"time"
@@ -178,8 +179,8 @@ type SubgraphEdge struct {
 
 // SubgraphResult holds the BFS neighborhood with both nodes and edges.
 type SubgraphResult struct {
-	Nodes map[string]int  // entityID -> hop distance from seed
-	Edges []SubgraphEdge  // edges connecting nodes within the subgraph
+	Nodes map[string]int // entityID -> hop distance from seed
+	Edges []SubgraphEdge // edges connecting nodes within the subgraph
 }
 
 // Subgraph returns the N-hop ego-graph around seeds with full edge data.
@@ -389,70 +390,89 @@ func (g *Graph) WeightedNeighbors(seeds []string, maxHops int, minWeight float64
 // --- Personalized PageRank ---
 
 // PersonalizedPageRank computes PPR scores seeded from the given entity IDs.
-// alpha is the teleport probability (typically 0.15), maxIter limits iterations,
-// and epsilon is the convergence threshold.
-func (g *Graph) PersonalizedPageRank(seeds []string, alpha float64, maxIter int, epsilon float64) map[string]float64 {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-
+// The random walk is restricted to the local neighborhood within maxHops of the
+// seeds so per-query work scales with the relevant subgraph rather than the
+// entire KB graph. alpha is the teleport probability (typically 0.15), maxIter
+// limits iterations, and epsilon is the convergence threshold.
+func (g *Graph) PersonalizedPageRank(
+	ctx context.Context,
+	seeds []string,
+	maxHops int,
+	alpha float64,
+	maxIter int,
+	epsilon float64,
+) (map[string]float64, error) {
 	if len(seeds) == 0 {
-		return nil
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
-	// Build the personalization vector (uniform over seeds).
-	seedWeight := 1.0 / float64(len(seeds))
+	g.mu.RLock()
+	nodes, neighbors, err := g.localPPRNeighborhoodLocked(ctx, seeds, maxHops)
+	g.mu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	if len(nodes) == 0 {
+		return nil, nil
+	}
+
 	personal := make(map[string]float64, len(seeds))
 	for _, s := range seeds {
-		personal[s] = seedWeight
+		if _, ok := neighbors[s]; !ok {
+			continue
+		}
+		personal[s]++
+	}
+	if len(personal) == 0 {
+		return nil, nil
+	}
+	seedWeight := 1.0 / float64(len(personal))
+	for id := range personal {
+		personal[id] = seedWeight
 	}
 
-	// Collect all nodes reachable in the graph (union of forward + reverse keys).
-	allNodes := make(map[string]struct{})
-	for id := range g.forward {
-		allNodes[id] = struct{}{}
+	rank := make(map[string]float64, len(nodes))
+	newRank := make(map[string]float64, len(nodes))
+	initialRank := 1.0 / float64(len(nodes))
+	for _, id := range nodes {
+		rank[id] = initialRank
+		newRank[id] = 0
 	}
-	for id := range g.reverse {
-		allNodes[id] = struct{}{}
-	}
-
-	// Degree = total edges (forward + reverse) for undirected view.
-	degree := make(map[string]int, len(allNodes))
-	for id := range allNodes {
-		degree[id] = len(g.forward[id]) + len(g.reverse[id])
-	}
-
-	// Initialize ranks.
-	n := float64(len(allNodes))
-	rank := make(map[string]float64, len(allNodes))
-	for id := range allNodes {
-		rank[id] = 1.0 / n
-	}
-
-	newRank := make(map[string]float64, len(allNodes))
 
 	for iter := 0; iter < maxIter; iter++ {
-		// Reset newRank for this iteration (reuse allocation).
-		for id := range newRank {
-			delete(newRank, id)
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 
-		// Distribute rank from each node to neighbors.
-		for id := range allNodes {
-			if degree[id] == 0 {
+		for _, id := range nodes {
+			newRank[id] = 0
+		}
+
+		for i, id := range nodes {
+			if i%256 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			if len(neighbors[id]) == 0 {
 				continue
 			}
-			share := rank[id] / float64(degree[id])
-			for _, e := range g.forward[id] {
-				newRank[e.TargetID] += share
-			}
-			for _, e := range g.reverse[id] {
-				newRank[e.TargetID] += share
+			share := rank[id] / float64(len(neighbors[id]))
+			for _, nextID := range neighbors[id] {
+				newRank[nextID] += share
 			}
 		}
 
-		// Apply teleport.
 		maxDiff := 0.0
-		for id := range allNodes {
+		for i, id := range nodes {
+			if i%256 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
 			nr := alpha*personal[id] + (1-alpha)*newRank[id]
 			diff := math.Abs(nr - rank[id])
 			if diff > maxDiff {
@@ -466,7 +486,69 @@ func (g *Graph) PersonalizedPageRank(seeds []string, alpha float64, maxIter int,
 		}
 	}
 
-	return rank
+	return rank, nil
+}
+
+func (g *Graph) localPPRNeighborhoodLocked(
+	ctx context.Context,
+	seeds []string,
+	maxHops int,
+) ([]string, map[string][]string, error) {
+	nodes := make(map[string]struct{}, len(seeds))
+	dist := make(map[string]int, len(seeds))
+	queue := make([]string, 0, len(seeds))
+
+	for _, id := range seeds {
+		if _, seen := dist[id]; seen {
+			continue
+		}
+		nodes[id] = struct{}{}
+		dist[id] = 0
+		queue = append(queue, id)
+	}
+
+	for head := 0; head < len(queue); head++ {
+		if head%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
+		cur := queue[head]
+		hop := dist[cur]
+		if hop >= maxHops {
+			continue
+		}
+		for _, edges := range [][]Edge{g.forward[cur], g.reverse[cur]} {
+			for _, e := range edges {
+				nodes[e.TargetID] = struct{}{}
+				if _, seen := dist[e.TargetID]; seen {
+					continue
+				}
+				dist[e.TargetID] = hop + 1
+				queue = append(queue, e.TargetID)
+			}
+		}
+	}
+
+	nodeIDs := make([]string, 0, len(nodes))
+	neighbors := make(map[string][]string, len(nodes))
+	for id := range nodes {
+		nodeIDs = append(nodeIDs, id)
+	}
+	for _, id := range nodeIDs {
+		localNeighbors := make([]string, 0, len(g.forward[id])+len(g.reverse[id]))
+		for _, edges := range [][]Edge{g.forward[id], g.reverse[id]} {
+			for _, e := range edges {
+				if _, ok := nodes[e.TargetID]; !ok {
+					continue
+				}
+				localNeighbors = append(localNeighbors, e.TargetID)
+			}
+		}
+		neighbors[id] = localNeighbors
+	}
+
+	return nodeIDs, neighbors, nil
 }
 
 // --- Helpers ---
