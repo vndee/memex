@@ -6,18 +6,18 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 
 ## Features
 
-- **Knowledge Graph** -- Entities, relations, and episodes extracted from natural language via LLM
-- **Hybrid Search** -- BM25 full-text + vector similarity + graph traversal, fused with Reciprocal Rank Fusion
-- **Temporal Awareness** -- Bitemporal relations (valid time + transaction time), memory decay, automatic pruning
-- **Multi-Provider** -- Ollama, OpenAI, Google Gemini, Vertex AI, Azure, Groq for both embeddings and LLM
-- **Per-KB Isolation** -- Each knowledge base has its own embedding model, LLM, and API keys
-- **MCP Server** -- Model Context Protocol support for Claude, Cursor, and other MCP-compatible clients
-- **REST API** -- Full HTTP API with Chi router (20+ endpoints)
-- **Terminal UI** -- Interactive 3-pane TUI with graph explorer, built with Bubble Tea
-- **Entity Resolution** -- LLM-powered deduplication with configurable similarity threshold
-- **Memory Lifecycle** -- Background decay, pruning of weak memories, entity consolidation
-- **Async Ingestion** -- Background job queue with retries, persistence across restarts
-- **Single Binary** -- Compiles to one static binary with embedded SQLite, no external dependencies
+- **Knowledge Graph** - Entities, relations, and episodes extracted from natural language via LLM
+- **Hybrid Search** - BM25 full-text + vector similarity + graph traversal, fused with Reciprocal Rank Fusion
+- **Temporal Awareness** - Bitemporal relations (valid time + transaction time), memory decay, automatic pruning
+- **Multi-Provider** - Ollama, OpenAI, Google Gemini, Vertex AI, Azure, Groq for both embeddings and LLM
+- **Per-KB Isolation** - Each knowledge base has its own embedding model, LLM, and API keys
+- **MCP Server** - Model Context Protocol support for Claude, Cursor, and other MCP-compatible clients
+- **REST API** - Full HTTP API with Chi router (20+ endpoints)
+- **Terminal UI** - Interactive 3-pane TUI with graph explorer, built with Bubble Tea
+- **Entity Resolution** - LLM-powered deduplication with configurable similarity threshold
+- **Memory Lifecycle** - Background decay, pruning of weak memories, entity consolidation
+- **Async Ingestion** - Background job queue with retries, persistence across restarts
+- **Single Binary** - Compiles to one static binary with embedded SQLite, no external dependencies
 
 ## Quick Start
 
@@ -214,4 +214,4 @@ export GEMINI_API_KEY="your-key"
 
 ## License
 
-MIT -- see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
