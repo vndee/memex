@@ -105,4 +105,3 @@ func TestHydrateSubgraph_UsesBatchLookups(t *testing.T) {
 		t.Fatalf("GetRelation calls = %d, want 0", store.getRelationCalls)
 	}
 }
-

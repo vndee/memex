@@ -73,4 +73,3 @@ func TestHydrateEntityResults_UsesBatchLookup(t *testing.T) {
 		t.Fatalf("GetEntity calls = %d, want 0", store.getEntityCalls)
 	}
 }
-
