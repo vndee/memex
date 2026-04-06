@@ -116,6 +116,32 @@ type Community struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// SubgraphNode is an entity within a retrieved subgraph, annotated with hop distance.
+type SubgraphNode struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Summary  string `json:"summary"`
+	Distance int    `json:"distance"`
+}
+
+// SubgraphEdge is a relation within a retrieved subgraph, including temporal data.
+type SubgraphEdge struct {
+	ID        string     `json:"id"`
+	SourceID  string     `json:"source_id"`
+	TargetID  string     `json:"target_id"`
+	Type      string     `json:"type"`
+	Weight    float64    `json:"weight"`
+	ValidAt   time.Time  `json:"valid_at"`
+	InvalidAt *time.Time `json:"invalid_at,omitempty"`
+}
+
+// Subgraph is a structured ego-graph neighborhood with full node and edge metadata.
+type Subgraph struct {
+	Nodes []SubgraphNode `json:"nodes"`
+	Edges []SubgraphEdge `json:"edges"`
+}
+
 // SearchResult is a unified result from hybrid retrieval.
 type SearchResult struct {
 	ID       string            `json:"id"`

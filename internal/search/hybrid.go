@@ -49,6 +49,11 @@ func New(
 	}
 }
 
+// GraphStore returns the underlying graph store for direct traversal access.
+func (s *Searcher) GraphStore() *graph.Store {
+	return s.graphSt
+}
+
 // Search executes hybrid search: BM25 + vector + graph BFS, fused via RRF,
 // with temporal decay applied.
 func (s *Searcher) Search(ctx context.Context, kbID, query string, opts Options) ([]*domain.SearchResult, error) {
@@ -102,10 +107,13 @@ func (s *Searcher) Search(ctx context.Context, kbID, query string, opts Options)
 	var graphResults []*domain.SearchResult
 	if opts.Channels.Graph {
 		seeds := extractEntityIDs(bm25Results, vecResults)
+		if opts.ExpandCommunities && len(seeds) > 0 {
+			seeds = expandWithCommunities(ctx, s.store, kbID, seeds)
+		}
 		if len(seeds) > 0 {
 			if kg := s.graphSt.Get(kbID); kg != nil {
 				var err error
-				graphResults, err = searchGraph(ctx, s.store, kg, kbID, seeds, opts.MaxHops, fetchLimit)
+				graphResults, err = searchGraph(ctx, s.store, kg, kbID, seeds, opts, fetchLimit)
 				if err != nil {
 					slog.Warn("graph search failed", "kb_id", kbID, "error", err)
 				}

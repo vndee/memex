@@ -192,6 +192,11 @@ func (s *MCPServer) registerTools() {
 		Name:        "memex_community_list",
 		Description: "List communities (entity clusters) in a knowledge base",
 	}, s.handleCommunityList)
+
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "memex_graph_traverse",
+		Description: "Traverse the knowledge graph from a seed entity, returning an N-hop subgraph with nodes and edges. Supports edge-type filtering and temporal queries.",
+	}, s.handleGraphTraverse)
 }
 
 // --- Input/Output types ---
@@ -228,10 +233,16 @@ type storeOutput struct {
 }
 
 type searchInput struct {
-	KB    string `json:"kb" jsonschema:"knowledge base ID"`
-	Query string `json:"query" jsonschema:"search query text"`
-	TopK  int    `json:"top_k,omitempty" jsonschema:"max results to return. Default: 10"`
-	Mode  string `json:"mode,omitempty" jsonschema:"search mode: hybrid, bm25, or vector. Default: hybrid"`
+	KB                string `json:"kb" jsonschema:"knowledge base ID"`
+	Query             string `json:"query" jsonschema:"search query text"`
+	TopK              int    `json:"top_k,omitempty" jsonschema:"max results to return. Default: 10"`
+	Mode              string `json:"mode,omitempty" jsonschema:"search mode: hybrid, bm25, or vector. Default: hybrid"`
+	MaxHops           int    `json:"max_hops,omitempty" jsonschema:"graph BFS depth for hybrid mode (1-10). Default: 2"`
+	GraphScorer       string `json:"graph_scorer,omitempty" jsonschema:"graph scoring: bfs, pagerank, or weighted. Default: bfs"`
+	EdgeTypes         string `json:"edge_types,omitempty" jsonschema:"comma-separated relation types to traverse (empty = all)"`
+	MinWeight         float64 `json:"min_weight,omitempty" jsonschema:"minimum edge weight for weighted scorer. Default: 0"`
+	ExpandCommunities bool   `json:"expand_communities,omitempty" jsonschema:"expand seeds with community members. Default: false"`
+	At                string `json:"at,omitempty" jsonschema:"ISO 8601 timestamp for temporal traversal (empty = current)"`
 }
 
 type searchOutput struct {
@@ -428,6 +439,20 @@ type communityListOutput struct {
 	Communities []*domain.Community `json:"communities"`
 }
 
+type graphTraverseInput struct {
+	KB        string `json:"kb" jsonschema:"knowledge base ID"`
+	EntityID  string `json:"entity_id" jsonschema:"seed entity ID to start traversal from"`
+	Hops      int    `json:"hops,omitempty" jsonschema:"max traversal depth (1-10). Default: 2"`
+	EdgeTypes string `json:"edge_types,omitempty" jsonschema:"comma-separated relation types to traverse (empty = all)"`
+	Format    string `json:"format,omitempty" jsonschema:"output format: json or text. Default: json"`
+	At        string `json:"at,omitempty" jsonschema:"ISO 8601 timestamp for temporal traversal (empty = current)"`
+}
+
+type graphTraverseOutput struct {
+	Subgraph *domain.Subgraph `json:"subgraph,omitempty"`
+	Text     string           `json:"text,omitempty"`
+}
+
 // --- Tool handlers ---
 
 func (s *MCPServer) handleKBCreate(ctx context.Context, req *mcp.CallToolRequest, input kbCreateInput) (*mcp.CallToolResult, kbCreateOutput, error) {
@@ -505,12 +530,39 @@ func (s *MCPServer) handleSearch(ctx context.Context, req *mcp.CallToolRequest, 
 	if input.TopK > 0 {
 		opts.TopK = input.TopK
 	}
+	if input.MaxHops > 0 {
+		opts.MaxHops = input.MaxHops
+	}
+	if input.MinWeight > 0 {
+		opts.MinWeight = input.MinWeight
+	}
+	opts.ExpandCommunities = input.ExpandCommunities
 
 	channels, err := search.ParseChannels(input.Mode)
 	if err != nil {
 		return nil, searchOutput{}, err
 	}
 	opts.Channels = channels
+
+	if input.GraphScorer != "" {
+		scorer, err := search.ParseGraphScorer(input.GraphScorer)
+		if err != nil {
+			return nil, searchOutput{}, err
+		}
+		opts.GraphScorer = scorer
+	}
+
+	if input.EdgeTypes != "" {
+		opts.EdgeTypes = SplitCSV(input.EdgeTypes)
+	}
+
+	if input.At != "" {
+		t, err := time.Parse(time.RFC3339, input.At)
+		if err != nil {
+			return nil, searchOutput{}, fmt.Errorf("invalid at timestamp: %w", err)
+		}
+		opts.TemporalAt = &t
+	}
 
 	results, err := s.searcher.Search(ctx, input.KB, input.Query, opts)
 	if err != nil {
@@ -903,7 +955,67 @@ func (s *MCPServer) handleCommunityList(ctx context.Context, req *mcp.CallToolRe
 	return nil, communityListOutput{Communities: communities}, nil
 }
 
+// --- Graph traverse handler ---
+
+func (s *MCPServer) handleGraphTraverse(ctx context.Context, req *mcp.CallToolRequest, input graphTraverseInput) (*mcp.CallToolResult, graphTraverseOutput, error) {
+	if input.KB == "" {
+		return nil, graphTraverseOutput{}, fmt.Errorf("kb is required")
+	}
+	if input.EntityID == "" {
+		return nil, graphTraverseOutput{}, fmt.Errorf("entity_id is required")
+	}
+
+	hops := input.Hops
+	if hops <= 0 {
+		hops = 2
+	}
+	if hops > 10 {
+		hops = 10
+	}
+
+	if err := s.searcher.EnsureLoaded(ctx, input.KB); err != nil {
+		return nil, graphTraverseOutput{}, fmt.Errorf("load graph for KB %q: %w", input.KB, err)
+	}
+
+	kg := s.searcher.GraphStore().Get(input.KB)
+	if kg == nil {
+		return textResult("No graph data available for this KB."), graphTraverseOutput{}, nil
+	}
+
+	var allowTypes []string
+	if input.EdgeTypes != "" {
+		allowTypes = SplitCSV(input.EdgeTypes)
+	}
+
+	sgResult := kg.Subgraph([]string{input.EntityID}, hops, allowTypes)
+
+	sub, err := HydrateSubgraph(ctx, s.store, input.KB, sgResult)
+	if err != nil {
+		return nil, graphTraverseOutput{}, fmt.Errorf("hydrate subgraph: %w", err)
+	}
+
+	if input.Format == "text" {
+		text := graph.SummarizeSubgraph(sub.Nodes, sub.Edges)
+		return textResult(text), graphTraverseOutput{Text: text}, nil
+	}
+
+	return nil, graphTraverseOutput{Subgraph: sub}, nil
+}
+
 // --- Helpers ---
+
+// SplitCSV splits a comma-separated string into trimmed non-empty parts.
+func SplitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
 
 // textResult creates a CallToolResult with a single text content.
 func textResult(text string) *mcp.CallToolResult {

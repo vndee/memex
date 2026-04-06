@@ -48,7 +48,7 @@ func (s *Store) Load(ctx context.Context, kbID string, loader RelationLoader) er
 		relIdx:  make(map[string]relRef, len(rels)),
 	}
 	for _, r := range rels {
-		g.addEdge(r.SourceID, r.TargetID, r.ID, r.Type, r.Weight)
+		g.addEdge(r.SourceID, r.TargetID, r.ID, r.Type, r.Weight, r.ValidAt, r.InvalidAt)
 	}
 
 	s.mu.Lock()

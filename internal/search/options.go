@@ -1,6 +1,9 @@
 package search
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 const (
 	maxTopK = 1000 // hard cap to prevent integer overflow and unbounded queries
@@ -14,12 +17,28 @@ const (
 	postFusionBuffer = 2
 )
 
+// GraphScorer selects the graph scoring strategy for hybrid search.
+type GraphScorer string
+
+const (
+	GraphScorerBFS      GraphScorer = "bfs"      // 1/hops (default)
+	GraphScorerPageRank GraphScorer = "pagerank"  // Personalized PageRank
+	GraphScorerWeighted GraphScorer = "weighted"  // cumulative edge-weight product
+)
+
 // Options configures a hybrid search query.
 type Options struct {
 	TopK     int      // max results (default 10)
 	MaxHops  int      // graph BFS depth (default 2)
 	RRFk     float64  // RRF constant (default 60)
 	Channels Channels // which search channels to enable
+
+	// Graph-specific options.
+	GraphScorer      GraphScorer // scoring strategy (default "bfs")
+	EdgeTypes        []string    // restrict graph traversal to these relation types (nil = all)
+	MinWeight        float64     // minimum edge weight for weighted traversal (default 0)
+	ExpandCommunities bool       // expand seed set with community members before graph BFS
+	TemporalAt       *time.Time  // if set, only traverse edges valid at this time
 }
 
 // Channels controls which search channels are active.
@@ -40,6 +59,7 @@ func DefaultOptions() Options {
 			Vector: true,
 			Graph:  true,
 		},
+		GraphScorer: GraphScorerBFS,
 	}
 }
 
@@ -58,6 +78,20 @@ func ParseChannels(mode string) (Channels, error) {
 	}
 }
 
+// ParseGraphScorer converts a scorer string to GraphScorer, returning an error for unknown values.
+func ParseGraphScorer(s string) (GraphScorer, error) {
+	switch s {
+	case "", "bfs":
+		return GraphScorerBFS, nil
+	case "pagerank":
+		return GraphScorerPageRank, nil
+	case "weighted":
+		return GraphScorerWeighted, nil
+	default:
+		return "", fmt.Errorf("unknown graph scorer %q (use bfs, pagerank, or weighted)", s)
+	}
+}
+
 func (o Options) withDefaults() Options {
 	if o.TopK <= 0 {
 		o.TopK = 10
@@ -73,6 +107,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.RRFk <= 0 {
 		o.RRFk = 60
+	}
+	if o.GraphScorer == "" {
+		o.GraphScorer = GraphScorerBFS
 	}
 	return o
 }

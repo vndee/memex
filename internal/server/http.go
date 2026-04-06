@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/vndee/memex/internal/domain"
+	"github.com/vndee/memex/internal/graph"
 	"github.com/vndee/memex/internal/ingestion"
 	"github.com/vndee/memex/internal/lifecycle"
 	"github.com/vndee/memex/internal/search"
@@ -137,6 +138,9 @@ func (s *HTTPServer) buildRouter() chi.Router {
 
 				// Search
 				r.Get("/search", s.handleSearch)
+
+				// Graph traversal
+				r.Get("/graph/traverse", s.handleGraphTraverse)
 
 				// Communities
 				r.Get("/communities", s.handleCommunityList)
@@ -449,6 +453,7 @@ func (s *HTTPServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	opts := search.DefaultOptions()
 	opts.TopK = parseIntParam(r, "top_k", 10, 1000)
+	opts.MaxHops = parseIntParam(r, "max_hops", 2, 10)
 
 	mode := r.URL.Query().Get("mode")
 	channels, err := search.ParseChannels(mode)
@@ -458,6 +463,41 @@ func (s *HTTPServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	opts.Channels = channels
 
+	if gs := r.URL.Query().Get("graph_scorer"); gs != "" {
+		scorer, err := search.ParseGraphScorer(gs)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		opts.GraphScorer = scorer
+	}
+
+	if et := r.URL.Query().Get("edge_types"); et != "" {
+		opts.EdgeTypes = SplitCSV(et)
+	}
+
+	if mw := r.URL.Query().Get("min_weight"); mw != "" {
+		v, err := strconv.ParseFloat(mw, 64)
+		if err != nil || v < 0 || v > 1 {
+			writeError(w, http.StatusBadRequest, "min_weight must be a number between 0 and 1")
+			return
+		}
+		opts.MinWeight = v
+	}
+
+	if r.URL.Query().Get("expand_communities") == "true" {
+		opts.ExpandCommunities = true
+	}
+
+	if at := r.URL.Query().Get("at"); at != "" {
+		t, err := time.Parse(time.RFC3339, at)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "at must be a valid RFC3339 timestamp")
+			return
+		}
+		opts.TemporalAt = &t
+	}
+
 	results, err := s.searcher.Search(r.Context(), kbID, query, opts)
 	if err != nil {
 		slog.Error("search failed", "kb_id", kbID, "error", err)
@@ -466,6 +506,54 @@ func (s *HTTPServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// Graph traverse handler
+
+func (s *HTTPServer) handleGraphTraverse(w http.ResponseWriter, r *http.Request) {
+	kbID := chi.URLParam(r, "kb_id")
+	entityID := r.URL.Query().Get("entity_id")
+	if entityID == "" {
+		writeError(w, http.StatusBadRequest, "entity_id query parameter is required")
+		return
+	}
+
+	hops := parseIntParam(r, "hops", 2, 10)
+
+	if err := s.searcher.EnsureLoaded(r.Context(), kbID); err != nil {
+		slog.Error("graph load failed", "kb_id", kbID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load graph")
+		return
+	}
+
+	kg := s.searcher.GraphStore().Get(kbID)
+	if kg == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"nodes": []any{}, "edges": []any{}})
+		return
+	}
+
+	var allowTypes []string
+	if et := r.URL.Query().Get("edge_types"); et != "" {
+		allowTypes = SplitCSV(et)
+	}
+
+	sgResult := kg.Subgraph([]string{entityID}, hops, allowTypes)
+
+	sub, err := HydrateSubgraph(r.Context(), s.store, kbID, sgResult)
+	if err != nil {
+		slog.Error("hydrate subgraph failed", "kb_id", kbID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to hydrate subgraph")
+		return
+	}
+
+	if r.URL.Query().Get("format") == "text" {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(graph.SummarizeSubgraph(sub.Nodes, sub.Edges)))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, sub)
 }
 
 // Community handler

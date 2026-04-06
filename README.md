@@ -15,8 +15,9 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 - **Low-cost ingestion pipeline** - Uses zero-LLM rule-based extraction for structured signals (errors, commits, config changes), with LLM fallback for rich text.
 - **Automatic memory capture** - Learns passively via editor hooks (`PostToolUse`, `PreCompact`, `UserPromptSubmit`) and records feedback/corrections for closed-loop improvement.
 - **Temporal knowledge graph core** - Builds entities, relations, and episodes with 3-tier entity resolution, bitemporal modeling, and relation strengthening instead of duplicate edges.
+- **Advanced graph retrieval** - Full N-hop subgraph extraction, Personalized PageRank scoring, weight-aware traversal, edge-type filtering, community-seeded expansion, temporal path queries, and graph-to-text summarization for richer LLM context.
 - **Hybrid retrieval and lifecycle** - Combines BM25 + vector + graph traversal with RRF, plus decay, pruning, and consolidation to keep memory relevant over time.
-- **Multiple interfaces** - Includes a full MCP server (24 tools), HTTP API (20+ endpoints), and a 3-pane Bubble Tea TUI with graph explorer.
+- **Multiple interfaces** - Includes a full MCP server (25 tools), HTTP API (20+ endpoints), and a 3-pane Bubble Tea TUI with graph explorer.
 - **Operationally ready** - Provides async ingestion jobs with retries and one-command editor integration via `memex init` (Claude Code, Cursor, Windsurf, VS Code, Zed).
 
 ## Quick Start
@@ -45,6 +46,13 @@ go build -o memex ./cmd/memex/
 # Search
 ./memex search "who works on Atlas?" --kb my-project
 
+# Search with advanced graph options
+./memex search "who works on Atlas?" --kb my-project \
+  --graph-scorer pagerank --edge-types works_on,knows --expand-communities
+
+# Traverse the graph from a specific entity
+./memex graph <entity-id> --kb my-project --hops 3 --format text
+
 # Launch the TUI
 ./memex tui
 
@@ -61,11 +69,11 @@ go build -o memex ./cmd/memex/
 Text Input
     |
     v
-+-----------+     +-------------+     +-------------+     +-----------+     +-------------+
++-----------+     +-------------+     +-------------+      +-----------+     +-------------+
 | Ingestion | --> | Rule-Based  | -?-> | LLM Extract | --> | Entity    | --> | Relation    |
-| Queue     |     | Extract     |     | (fallback)  |     | Resolution|     | Upsert &    |
-|           |     | (zero cost) |     |             |     | & Merge   |     | Strengthen  |
-+-----------+     +-------------+     +-------------+     +-----------+     +-------------+
+| Queue     |     | Extract     |     | (fallback)  |      | Resolution|     | Upsert &    |
+|           |     | (zero cost) |     |             |      | & Merge   |     | Strengthen  |
++-----------+     +-------------+     +-------------+      +-----------+     +-------------+
                                                               |
                                                               v
                                                       +---------------+
@@ -78,16 +86,17 @@ Text Input
                   |               |               |
                   v               v               v
             +-----------+   +-----------+   +-----------+
-            | BM25 FTS  |   | Vector    |   | Graph     |
-            | Search    |   | Search    |   | Traversal |
-            +-----------+   +-----------+   +-----------+
+            | BM25 FTS  |   | Vector    |   | Graph Traversal     |
+            | Search    |   | Search    |   | (BFS / PageRank /   |
+            +-----------+   +-----------+   |  Weighted / Temporal)|
+                  |               |         +---------------------+
                   |               |               |
                   +-------+-------+-------+-------+
                           |               |
                           v               v
                     +----------+   +-----------+
                     | RRF      |   | Community |
-                    | Fusion   |   | Detection |
+                    | Fusion   |   | Expansion |
                     +----------+   +-----------+
 ```
 
@@ -108,6 +117,61 @@ Weights are combined using probability union: `w = 1 - (1-a)(1-b)`, bounded to [
 During lifecycle management:
 - **Consolidation** merges duplicate entities and deduplicates any resulting duplicate edges
 - **Pruning** deduplicates fragmented relations before deleting — combined weight may exceed the prune threshold, saving them from deletion
+
+## Graph Retrieval
+
+Memex exposes the knowledge graph directly, giving agents rich structural context beyond keyword and vector search.
+
+### Subgraph Extraction
+
+Retrieve the full N-hop ego-graph around any entity as structured JSON or natural language text:
+
+```bash
+# JSON subgraph (nodes + edges with metadata)
+./memex graph <entity-id> --kb my-project --hops 3
+
+# Natural language summary for LLM context
+./memex graph <entity-id> --kb my-project --hops 2 --format text
+```
+
+Text output is designed for direct injection into LLM prompts:
+
+```
+Context from knowledge graph:
+
+Alice (person, seed): Software engineer at Acme
+  - works_on Project Atlas [weight: 0.90, since 2025-01-15]
+  - knows Bob [weight: 0.75, since 2025-02-01]
+
+Project Atlas (project, 1 hop): Internal platform for data processing
+  - uses Kafka [weight: 0.85, since 2025-01-20]
+```
+
+### Graph Scoring Strategies
+
+Control how the graph channel ranks entities during hybrid search:
+
+| Scorer | Flag | Description |
+|--------|------|-------------|
+| **BFS** (default) | `--graph-scorer bfs` | Score = `1/hops`. Closer neighbors rank higher. |
+| **PageRank** | `--graph-scorer pagerank` | Personalized PageRank from seed nodes. Hub entities rank higher. |
+| **Weighted** | `--graph-scorer weighted` | Cumulative edge-weight product along path. High-confidence paths dominate. |
+
+### Filtering & Temporal Queries
+
+```bash
+# Only traverse specific relation types
+./memex search "Atlas" --kb my-project --edge-types works_on,manages
+
+# Only traverse edges with weight >= 0.5
+./memex search "Atlas" --kb my-project --graph-scorer weighted --min-weight 0.5
+
+# Expand seeds with their community members before graph traversal
+./memex search "Atlas" --kb my-project --expand-communities
+
+# Query the graph as it was at a specific point in time
+./memex search "Atlas" --kb my-project --at "2025-06-01T00:00:00Z"
+```
 
 ## Providers
 
@@ -131,6 +195,7 @@ memex kb list [flags]                      List knowledge bases
 memex kb delete <id> [flags]               Delete a knowledge base
 memex store <text> --kb <id> [flags]       Store a memory
 memex search <query> --kb <id> [flags]     Hybrid search
+memex graph <entity_id> --kb <id> [flags]  Traverse graph from entity
 memex jobs [--kb <id>] [--status <s>]      List ingestion jobs
 memex stats [--kb <id>] [flags]            Show statistics
 memex serve [flags]                        Start HTTP API server
@@ -146,6 +211,28 @@ memex tui [flags]                          Launch interactive terminal UI
 --name <name>               Display name
 --desc <description>        Description
 --db <path>                 Database path (default: ~/.memex/memex.db)
+```
+
+### Search Flags
+
+```
+--mode <hybrid|bm25|vector>     Search mode (default: hybrid)
+--top-k <n>                     Max results (default: 10)
+--hops <n>                      Graph BFS depth, 1-10 (default: 2)
+--graph-scorer <bfs|pagerank|weighted>  Graph scoring strategy (default: bfs)
+--edge-types <type1,type2>      Restrict traversal to these relation types
+--min-weight <f>                Min edge weight for weighted scorer (default: 0)
+--expand-communities            Expand seeds with community members
+--at <RFC3339>                  Temporal filter: only traverse edges valid at this time
+--json                          Output as JSON
+```
+
+### Graph Traverse Flags
+
+```
+--hops <n>                      Traversal depth, 1-10 (default: 2)
+--edge-types <type1,type2>      Restrict traversal to these relation types
+--format <json|text>            Output format (default: json)
 ```
 
 ## MCP Integration
@@ -170,13 +257,18 @@ Or manually add to your editor's MCP config:
 }
 ```
 
-### MCP Tools (24)
+### MCP Tools (25)
 
 **Memory & Search**
 | Tool | Description |
 |------|-------------|
 | `memex_store` | Store a memory (rule-based or LLM extraction) |
-| `memex_search` | Hybrid search (BM25 + vector + graph) |
+| `memex_search` | Hybrid search (BM25 + vector + graph). Supports `max_hops`, `graph_scorer` (bfs/pagerank/weighted), `edge_types`, `min_weight`, `expand_communities`, and temporal `at` params. |
+
+**Graph Traversal**
+| Tool | Description |
+|------|-------------|
+| `memex_graph_traverse` | Traverse the knowledge graph from a seed entity, returning an N-hop subgraph. Supports `edge_types` filtering, temporal `at` queries, and `format` (json/text). |
 
 **Knowledge Bases**
 | Tool | Description |
@@ -239,13 +331,14 @@ Start with `memex serve --host 127.0.0.1 --port 8080`.
 | GET | `/api/v1/kb/{id}` | Get KB |
 | DELETE | `/api/v1/kb/{id}` | Delete KB |
 | POST | `/api/v1/kb/{id}/store` | Store memory |
-| POST | `/api/v1/kb/{id}/search` | Hybrid search |
+| POST | `/api/v1/kb/{id}/search` | Hybrid search (query: `max_hops`, `graph_scorer`, `edge_types`, `min_weight`, `expand_communities`, `at`) |
 | GET | `/api/v1/kb/{id}/entities` | List entities |
 | GET | `/api/v1/kb/{id}/entities/{eid}` | Get entity |
 | DELETE | `/api/v1/kb/{id}/entities/{eid}` | Delete entity |
 | GET | `/api/v1/kb/{id}/relations` | List relations |
 | GET | `/api/v1/kb/{id}/episodes` | List episodes |
 | GET | `/api/v1/kb/{id}/communities` | List communities |
+| GET | `/api/v1/kb/{id}/graph/traverse` | Traverse graph from entity (query: `entity_id`, `hops`, `edge_types`, `format`, `at`) |
 | POST | `/api/v1/kb/{id}/feedback` | Record feedback |
 | GET | `/api/v1/kb/{id}/feedback` | List/search feedback |
 | GET | `/api/v1/kb/{id}/feedback/stats` | Feedback statistics |

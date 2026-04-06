@@ -19,6 +19,7 @@ import (
 	"github.com/vndee/memex/internal/domain"
 	"github.com/vndee/memex/internal/embedding"
 	"github.com/vndee/memex/internal/extraction"
+	"github.com/vndee/memex/internal/graph"
 	"github.com/vndee/memex/internal/hooks"
 	"github.com/vndee/memex/internal/ingestion"
 	"github.com/vndee/memex/internal/lifecycle"
@@ -72,6 +73,8 @@ func main() {
 		cmdStore(args)
 	case "search":
 		cmdSearch(args)
+	case "graph":
+		cmdGraph(args)
 	case "jobs":
 		cmdJobs(args)
 	case "serve":
@@ -101,6 +104,7 @@ Usage:
   memex kb delete <id> [flags]               Delete a knowledge base
   memex store <text> --kb <id> [flags]       Store a memory
   memex search <query> --kb <id> [flags]     Hybrid search (BM25 + vector + graph)
+  memex graph <entity_id> --kb <id> [flags] Traverse graph from an entity
   memex jobs [--kb <id>] [--status <s>]      List ingestion jobs
   memex jobs <id>                            Show job details
   memex jobs retry <id>                      Retry a failed job
@@ -448,6 +452,11 @@ func cmdSearch(args []string) {
 	topK := fs.Int("top-k", 10, "number of results")
 	mode := fs.String("mode", "hybrid", "search mode: hybrid|bm25|vector")
 	hops := fs.Int("hops", 2, "graph BFS hops for hybrid mode")
+	graphScorer := fs.String("graph-scorer", "bfs", "graph scoring: bfs|pagerank|weighted")
+	edgeTypes := fs.String("edge-types", "", "comma-separated relation types to traverse")
+	minWeight := fs.Float64("min-weight", 0, "minimum edge weight for weighted scorer")
+	expandComm := fs.Bool("expand-communities", false, "expand seeds with community members")
+	at := fs.String("at", "", "ISO 8601 timestamp for temporal traversal")
 	jsonOut := fs.Bool("json", false, "output as JSON")
 	fs.Parse(args)
 
@@ -464,6 +473,8 @@ func cmdSearch(args []string) {
 	opts := search.DefaultOptions()
 	opts.TopK = *topK
 	opts.MaxHops = *hops
+	opts.MinWeight = *minWeight
+	opts.ExpandCommunities = *expandComm
 
 	channels, err := search.ParseChannels(*mode)
 	if err != nil {
@@ -471,6 +482,26 @@ func cmdSearch(args []string) {
 		os.Exit(1)
 	}
 	opts.Channels = channels
+
+	scorer, err := search.ParseGraphScorer(*graphScorer)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	opts.GraphScorer = scorer
+
+	if *edgeTypes != "" {
+		opts.EdgeTypes = server.SplitCSV(*edgeTypes)
+	}
+
+	if *at != "" {
+		parsed, err := time.Parse(time.RFC3339, *at)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid --at timestamp: %v\n", err)
+			os.Exit(1)
+		}
+		opts.TemporalAt = &parsed
+	}
 
 	embedReg := embedding.NewRegistry()
 	searcher := server.NewSearcher(store, cfg.DecayHalfLife, embedReg.NewProvider)
@@ -494,6 +525,67 @@ func cmdSearch(args []string) {
 	for i, r := range results {
 		fmt.Printf("%d. [%s] %s (score: %.4f)\n", i+1, r.Type, r.Content, r.Score)
 	}
+}
+
+func cmdGraph(args []string) {
+	fs := flag.NewFlagSet("graph", flag.ExitOnError)
+	db := fs.String("db", "", "database path")
+	kb := fs.String("kb", "", "knowledge base ID (required)")
+	hops := fs.Int("hops", 2, "traversal depth (1-10)")
+	edgeTypes := fs.String("edge-types", "", "comma-separated relation types to traverse")
+	format := fs.String("format", "json", "output format: json|text")
+	fs.Parse(args)
+
+	if *kb == "" || fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: memex graph <entity_id> --kb <id> [--hops 2] [--format json|text]")
+		os.Exit(1)
+	}
+
+	entityID := fs.Arg(0)
+	if *hops < 1 {
+		*hops = 1
+	}
+	if *hops > 10 {
+		*hops = 10
+	}
+	cfg, store := loadConfig(*db)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	embedReg := embedding.NewRegistry()
+	searcher := server.NewSearcher(store, cfg.DecayHalfLife, embedReg.NewProvider)
+
+	if err := searcher.EnsureLoaded(ctx, *kb); err != nil {
+		slog.Error("failed to load graph", "error", err)
+		os.Exit(1)
+	}
+
+	kg := searcher.GraphStore().Get(*kb)
+	if kg == nil {
+		fmt.Println("No graph data available.")
+		return
+	}
+
+	var allowTypes []string
+	if *edgeTypes != "" {
+		allowTypes = server.SplitCSV(*edgeTypes)
+	}
+
+	sgResult := kg.Subgraph([]string{entityID}, *hops, allowTypes)
+
+	sub, err := server.HydrateSubgraph(ctx, store, *kb, sgResult)
+	if err != nil {
+		slog.Error("failed to hydrate subgraph", "error", err)
+		os.Exit(1)
+	}
+
+	if *format == "text" {
+		fmt.Print(graph.SummarizeSubgraph(sub.Nodes, sub.Edges))
+		return
+	}
+
+	printJSON(sub)
 }
 
 func cmdMCP(args []string) {

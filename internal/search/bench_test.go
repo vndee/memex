@@ -583,14 +583,14 @@ func benchGraphBFS(b *testing.B, n int) {
 	}
 	// Chain.
 	for i := 1; i < n; i++ {
-		g.AddEdge(ids[i-1], ids[i], fmt.Sprintf("r%d", i), "next", 1.0)
+		g.AddEdge(ids[i-1], ids[i], fmt.Sprintf("r%d", i), "next", 1.0, time.Now(), nil)
 	}
 	// Random cross-links.
 	for i := range n / 2 {
 		src := rand.IntN(n)
 		dst := rand.IntN(n)
 		if src != dst {
-			g.AddEdge(ids[src], ids[dst], fmt.Sprintf("x%d", i), "link", 0.5)
+			g.AddEdge(ids[src], ids[dst], fmt.Sprintf("x%d", i), "link", 0.5, time.Now(), nil)
 		}
 	}
 
