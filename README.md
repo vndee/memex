@@ -10,24 +10,14 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 
 ## Features
 
-- **Zero-LLM Extraction** - Rule-based pattern matching extracts entities from bash errors, git commits, config changes, and decisions at zero token cost. Falls back to LLM for rich text.
-- **Hook-Based Auto-Capture** - Passive learning via editor hooks (PostToolUse, PreCompact, UserPromptSubmit). No explicit `store` calls needed.
-- **Feedback/Correction Tracking** - Closed-loop learning: record when AI gets things wrong, search past corrections to avoid repeating mistakes.
-- **One-Command Setup** - `memex init` auto-configures Claude Code, Cursor, Windsurf, VS Code, and Zed in one command.
-- **24 MCP Tools** - Complete MCP API covering memory storage, search, entities, relations, episodes, communities, feedback, lifecycle, and jobs.
-- **Local First** - Works out of the box with Ollama for both embeddings and LLM — your data never leaves your machine
-- **Knowledge Graph** - Entities, relations, and episodes extracted from natural language via LLM
-- **Hybrid Search** - BM25 full-text + vector similarity + graph traversal, fused with Reciprocal Rank Fusion
-- **Relation Strengthening** - Re-encountering the same fact strengthens existing edges via probability union instead of creating duplicates
-- **Temporal Awareness** - Bitemporal relations (valid time + transaction time), memory decay, automatic pruning
-- **Multi-Provider** - Ollama (local), OpenAI, Google Gemini, Vertex AI, Azure, Groq for both embeddings and LLM
-- **Per-KB Isolation** - Each knowledge base has its own embedding model, LLM, and API keys
-- **REST API** - Full HTTP API with Chi router (20+ endpoints)
-- **Terminal UI** - Interactive 3-pane TUI with graph explorer, built with Bubble Tea
-- **3-Tier Entity Resolution** - Exact match, fuzzy (Jaro-Winkler), and LLM-powered deduplication
-- **Memory Lifecycle** - Ebbinghaus-inspired decay, smart pruning (deduplicates before deleting), entity consolidation with edge merging
-- **Async Ingestion** - Background job queue with retries, persistence across restarts
-- **Single Binary** - Compiles to one static binary with embedded SQLite, no external dependencies
+- **Local-first and private** - Runs as a single Go binary with embedded SQLite, works out of the box with Ollama, and keeps data on your machine.
+- **Flexible model providers** - Supports Ollama (local), OpenAI, Gemini, Vertex AI, Azure, and Groq, with per-knowledge-base model and credential isolation.
+- **Low-cost ingestion pipeline** - Uses zero-LLM rule-based extraction for structured signals (errors, commits, config changes), with LLM fallback for rich text.
+- **Automatic memory capture** - Learns passively via editor hooks (`PostToolUse`, `PreCompact`, `UserPromptSubmit`) and records feedback/corrections for closed-loop improvement.
+- **Temporal knowledge graph core** - Builds entities, relations, and episodes with 3-tier entity resolution, bitemporal modeling, and relation strengthening instead of duplicate edges.
+- **Hybrid retrieval and lifecycle** - Combines BM25 + vector + graph traversal with RRF, plus decay, pruning, and consolidation to keep memory relevant over time.
+- **Multiple interfaces** - Includes a full MCP server (24 tools), HTTP API (20+ endpoints), and a 3-pane Bubble Tea TUI with graph explorer.
+- **Operationally ready** - Provides async ingestion jobs with retries and one-command editor integration via `memex init` (Claude Code, Cursor, Windsurf, VS Code, Zed).
 
 ## Quick Start
 
