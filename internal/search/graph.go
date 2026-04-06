@@ -2,8 +2,6 @@ package search
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -18,6 +16,9 @@ const (
 	pprAlpha   = 0.15 // teleport probability (jump back to seed)
 	pprMaxIter = 20   // max power iterations
 	pprEpsilon = 1e-6 // convergence threshold
+
+	// Minimum hydration batch size avoids many tiny IN queries when limit is small.
+	minHydrationBatchSize = 64
 )
 
 // searchGraph expands seed entity IDs via BFS on the knowledge graph,
@@ -184,26 +185,37 @@ func hydrateEntityResults(
 	scores map[string]float64,
 	limit int,
 ) ([]*domain.SearchResult, error) {
+	if limit <= 0 || len(ids) == 0 {
+		return nil, nil
+	}
+
 	results := make([]*domain.SearchResult, 0, min(len(ids), limit))
-	for _, id := range ids {
-		if len(results) >= limit {
-			break
-		}
-		ent, err := store.GetEntity(ctx, kbID, id)
+	batchSize := min(len(ids), max(limit*2, minHydrationBatchSize))
+	for start := 0; start < len(ids) && len(results) < limit; start += batchSize {
+		end := min(start+batchSize, len(ids))
+		batchIDs := ids[start:end]
+
+		entitiesByID, err := store.GetEntitiesByIDs(ctx, kbID, batchIDs)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("graph entity batch lookup failed", "count", len(batchIDs), "error", err)
+			return nil, fmt.Errorf("get entities by ids: %w", err)
+		}
+		for _, id := range batchIDs {
+			if len(results) >= limit {
+				break
+			}
+			ent, ok := entitiesByID[id]
+			if !ok {
 				continue
 			}
-			slog.Warn("graph entity lookup failed", "id", id, "error", err)
-			return nil, fmt.Errorf("get entity %s: %w", id, err)
+			results = append(results, &domain.SearchResult{
+				ID:      ent.ID,
+				KBID:    ent.KBID,
+				Type:    domain.ItemEntity,
+				Content: ent.Name + ": " + ent.Summary,
+				Score:   scores[id],
+			})
 		}
-		results = append(results, &domain.SearchResult{
-			ID:      ent.ID,
-			KBID:    ent.KBID,
-			Type:    domain.ItemEntity,
-			Content: ent.Name + ": " + ent.Summary,
-			Score:   scores[id],
-		})
 	}
 	return results, nil
 }

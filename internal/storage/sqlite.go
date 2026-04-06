@@ -34,6 +34,7 @@ type Store interface {
 	// Entities
 	CreateEntity(ctx context.Context, e *domain.Entity) error
 	GetEntity(ctx context.Context, kbID, id string) (*domain.Entity, error)
+	GetEntitiesByIDs(ctx context.Context, kbID string, ids []string) (map[string]*domain.Entity, error)
 	UpdateEntity(ctx context.Context, e *domain.Entity) error
 	DeleteEntity(ctx context.Context, kbID, id string) error
 	FindEntitiesByName(ctx context.Context, kbID, name string) ([]*domain.Entity, error)
@@ -43,6 +44,7 @@ type Store interface {
 	// Relations
 	CreateRelation(ctx context.Context, r *domain.Relation) error
 	GetRelation(ctx context.Context, kbID, id string) (*domain.Relation, error)
+	GetRelationsByIDs(ctx context.Context, kbID string, ids []string) (map[string]*domain.Relation, error)
 	InvalidateRelation(ctx context.Context, kbID, id string, invalidAt time.Time) error
 	GetRelationsForEntity(ctx context.Context, kbID, entityID string) ([]*domain.Relation, error)
 	GetValidRelations(ctx context.Context, kbID string, at time.Time) ([]*domain.Relation, error)
