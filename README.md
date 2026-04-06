@@ -13,6 +13,7 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 - **Local First** - Works out of the box with Ollama for both embeddings and LLM — your data never leaves your machine
 - **Knowledge Graph** - Entities, relations, and episodes extracted from natural language via LLM
 - **Hybrid Search** - BM25 full-text + vector similarity + graph traversal, fused with Reciprocal Rank Fusion
+- **Relation Strengthening** - Re-encountering the same fact strengthens existing edges via probability union instead of creating duplicates
 - **Temporal Awareness** - Bitemporal relations (valid time + transaction time), memory decay, automatic pruning
 - **Multi-Provider** - Ollama (local), OpenAI, Google Gemini, Vertex AI, Azure, Groq for both embeddings and LLM
 - **Per-KB Isolation** - Each knowledge base has its own embedding model, LLM, and API keys
@@ -20,7 +21,7 @@ Inspired by Vannevar Bush's 1945 vision of a personal knowledge machine, Memex g
 - **REST API** - Full HTTP API with Chi router (20+ endpoints)
 - **Terminal UI** - Interactive 3-pane TUI with graph explorer, built with Bubble Tea
 - **Entity Resolution** - LLM-powered deduplication with configurable similarity threshold
-- **Memory Lifecycle** - Background decay, pruning of weak memories, entity consolidation
+- **Memory Lifecycle** - Background decay, smart pruning (deduplicates before deleting), entity consolidation with edge merging
 - **Async Ingestion** - Background job queue with retries, persistence across restarts
 - **Single Binary** - Compiles to one static binary with embedded SQLite, no external dependencies
 
@@ -63,35 +64,53 @@ go build -o memex ./cmd/memex/
 Text Input
     |
     v
-+-----------+     +-------------+     +-----------+
-| Ingestion | --> | LLM Extract | --> | Entity    |
-| Queue     |     | (entities,  |     | Resolution|
-|           |     |  relations) |     | & Merge   |
-+-----------+     +-------------+     +-----------+
-                                            |
-                                            v
-                                    +---------------+
-                                    | Embed & Store |
-                                    | (SQLite +     |
-                                    |  vec index)   |
-                                    +---------------+
-                                            |
-            +-------------------------------+
-            |               |               |
-            v               v               v
-      +-----------+   +-----------+   +-----------+
-      | BM25 FTS  |   | Vector    |   | Graph     |
-      | Search    |   | Search    |   | Traversal |
-      +-----------+   +-----------+   +-----------+
-            |               |               |
-            +-------+-------+-------+-------+
-                    |               |
-                    v               v
-              +----------+   +-----------+
-              | RRF      |   | Community |
-              | Fusion   |   | Detection |
-              +----------+   +-----------+
++-----------+     +-------------+     +-----------+     +-------------+
+| Ingestion | --> | LLM Extract | --> | Entity    | --> | Relation    |
+| Queue     |     | (entities,  |     | Resolution|     | Upsert &    |
+|           |     |  relations) |     | & Merge   |     | Strengthen  |
++-----------+     +-------------+     +-----------+     +-------------+
+                                                              |
+                                                              v
+                                                      +---------------+
+                                                      | Embed & Store |
+                                                      | (SQLite +     |
+                                                      |  vec index)   |
+                                                      +---------------+
+                                                              |
+                  +-------------------------------------------+
+                  |               |               |
+                  v               v               v
+            +-----------+   +-----------+   +-----------+
+            | BM25 FTS  |   | Vector    |   | Graph     |
+            | Search    |   | Search    |   | Traversal |
+            +-----------+   +-----------+   +-----------+
+                  |               |               |
+                  +-------+-------+-------+-------+
+                          |               |
+                          v               v
+                    +----------+   +-----------+
+                    | RRF      |   | Community |
+                    | Fusion   |   | Detection |
+                    +----------+   +-----------+
 ```
+
+## How Memory Strengthening Works
+
+When the same fact is ingested multiple times, Memex recognizes existing relations and strengthens them rather than creating duplicates:
+
+```bash
+./memex store "Alice works on Project Atlas" --kb my-project
+# Creates: Alice --[WORKS_ON, weight=0.50]--> Project Atlas
+
+./memex store "Alice is working on the Atlas project" --kb my-project
+# Strengthens: Alice --[WORKS_ON, weight=0.75]--> Project Atlas (not a duplicate)
+```
+
+Weights are combined using probability union: `w = 1 - (1-a)(1-b)`, bounded to [0, 1] and monotonically increasing with each observation. This means frequently mentioned facts become high-confidence edges in the graph.
+
+During lifecycle management:
+- **Consolidation** merges duplicate entities and deduplicates any resulting duplicate edges
+- **Pruning** deduplicates fragmented relations before deleting — combined weight may exceed the prune threshold, saving them from deletion
 
 ## Providers
 
