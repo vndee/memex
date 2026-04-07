@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -355,7 +357,10 @@ func TestPersonalizedPageRank_ConvergesOnSeeds(t *testing.T) {
 	addEdge(g, "a", "b", "r1", "knows", 1.0)
 	addEdge(g, "b", "c", "r2", "knows", 1.0)
 
-	ranks := g.PersonalizedPageRank([]string{"a"}, 0.15, 50, 1e-8)
+	ranks, err := g.PersonalizedPageRank(context.Background(), []string{"a"}, 2, 0.15, 50, 1e-8)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if ranks["a"] <= ranks["c"] {
 		t.Errorf("seed 'a' should rank higher than distant 'c': a=%.6f c=%.6f", ranks["a"], ranks["c"])
@@ -371,7 +376,10 @@ func TestPersonalizedPageRank_HubsRankHigher(t *testing.T) {
 	addEdge(g, "h", "d", "r4", "knows", 1.0)
 	addEdge(g, "e", "d", "r5", "knows", 1.0)
 
-	ranks := g.PersonalizedPageRank([]string{"a"}, 0.15, 50, 1e-8)
+	ranks, err := g.PersonalizedPageRank(context.Background(), []string{"a"}, 3, 0.15, 50, 1e-8)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if ranks["h"] <= ranks["e"] {
 		t.Errorf("hub 'h' should rank higher than leaf 'e': h=%.6f e=%.6f", ranks["h"], ranks["e"])
@@ -382,8 +390,47 @@ func TestPersonalizedPageRank_EmptySeeds(t *testing.T) {
 	g := New()
 	addEdge(g, "a", "b", "r1", "knows", 1.0)
 
-	ranks := g.PersonalizedPageRank(nil, 0.15, 20, 1e-6)
+	ranks, err := g.PersonalizedPageRank(context.Background(), nil, 2, 0.15, 20, 1e-6)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ranks != nil {
 		t.Errorf("empty seeds should return nil, got %v", ranks)
+	}
+}
+
+func TestPersonalizedPageRank_LocalNeighborhoodExcludesFarNodes(t *testing.T) {
+	g := New()
+	addEdge(g, "a", "b", "r1", "knows", 1.0)
+	addEdge(g, "b", "c", "r2", "knows", 1.0)
+	addEdge(g, "x", "y", "r3", "knows", 1.0)
+	addEdge(g, "y", "z", "r4", "knows", 1.0)
+
+	ranks, err := g.PersonalizedPageRank(context.Background(), []string{"a"}, 1, 0.15, 50, 1e-8)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := ranks["c"]; ok {
+		t.Fatalf("expected 2-hop node c to be excluded, got ranks %v", ranks)
+	}
+	if _, ok := ranks["x"]; ok {
+		t.Fatalf("expected disconnected node x to be excluded, got ranks %v", ranks)
+	}
+	if _, ok := ranks["b"]; !ok {
+		t.Fatalf("expected 1-hop node b in local neighborhood, got ranks %v", ranks)
+	}
+}
+
+func TestPersonalizedPageRank_RespectsCanceledContext(t *testing.T) {
+	g := New()
+	addEdge(g, "a", "b", "r1", "knows", 1.0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := g.PersonalizedPageRank(ctx, []string{"a"}, 2, 0.15, 20, 1e-6)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
