@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"math"
+	"sort"
 	"sync"
 	"time"
 )
@@ -461,7 +462,12 @@ func (g *Graph) PersonalizedPageRank(
 				continue
 			}
 			share := rank[id] / float64(len(neighbors[id]))
-			for _, nextID := range neighbors[id] {
+			for j, nextID := range neighbors[id] {
+				if j%256 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+				}
 				newRank[nextID] += share
 			}
 		}
@@ -519,7 +525,12 @@ func (g *Graph) localPPRNeighborhoodLocked(
 			continue
 		}
 		for _, edges := range [][]Edge{g.forward[cur], g.reverse[cur]} {
-			for _, e := range edges {
+			for edgeIdx, e := range edges {
+				if edgeIdx%256 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, nil, err
+					}
+				}
 				nodes[e.TargetID] = struct{}{}
 				if _, seen := dist[e.TargetID]; seen {
 					continue
@@ -535,10 +546,23 @@ func (g *Graph) localPPRNeighborhoodLocked(
 	for id := range nodes {
 		nodeIDs = append(nodeIDs, id)
 	}
-	for _, id := range nodeIDs {
+	sort.Strings(nodeIDs)
+	for i, id := range nodeIDs {
+		if i%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
 		localNeighbors := make([]string, 0, len(g.forward[id])+len(g.reverse[id]))
+		edgeCount := 0
 		for _, edges := range [][]Edge{g.forward[id], g.reverse[id]} {
 			for _, e := range edges {
+				if edgeCount%256 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, nil, err
+					}
+				}
+				edgeCount++
 				if _, ok := nodes[e.TargetID]; !ok {
 					continue
 				}
